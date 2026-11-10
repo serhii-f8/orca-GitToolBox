@@ -9,19 +9,24 @@
   <body>
     <div id="app">
       <header class="toolbar">
-        <select id="repo" title="Repository"></select>
-        <nav class="tabs" role="tablist">
-          <button class="tab active" data-tab="log" role="tab">Log</button>
-          <button class="tab" data-tab="changes" role="tab">Changes <span id="changesCount" class="count"></span></button>
-        </nav>
+        <div class="where">
+          <select id="repo" title="Repository" aria-label="Repository"></select>
+          <span id="branchChip" class="branch-chip hidden"></span>
+        </div>
         <span class="spacer"></span>
-        <span id="busy" class="spinner hidden" title="Working…"></span>
-        <button class="icon" data-act="fetch" title="Fetch all remotes" data-icon="fetch"></button>
-        <button class="icon" data-act="pull" title="Update project (pull)" data-icon="pull"></button>
-        <button class="icon" data-act="push" title="Push" data-icon="push"></button>
-        <button class="icon" data-act="newBranch" title="New branch…" data-icon="plus"></button>
-        <button class="icon" data-act="refresh" title="Refresh" data-icon="refresh"></button>
+        <span id="busy" class="spinner hidden" title="Working…" role="status" aria-label="Working"></span>
+        <div class="sync" role="group" aria-label="Sync">
+          <button class="icon" data-act="fetch" title="Fetch all remotes" aria-label="Fetch" data-icon="fetch"></button>
+          <button class="icon" data-act="pull" title="Update (pull)" aria-label="Update" data-icon="pull"></button>
+          <button class="icon" data-act="push" title="Push…" aria-label="Push" data-icon="push"></button>
+        </div>
+        <button class="icon" data-act="newBranch" title="New branch…" aria-label="New branch" data-icon="plus"></button>
+        <button class="icon" data-act="refresh" title="Refresh" aria-label="Refresh" data-icon="refresh"></button>
       </header>
+      <nav class="tabs" role="tablist">
+        <button class="tab active" data-tab="log" role="tab">Log</button>
+        <button class="tab" data-tab="changes" role="tab">Changes<span id="changesCount" class="count"></span></button>
+      </nav>
       <div id="banner" class="banner hidden"></div>
 
       <main id="logView" class="view">
@@ -54,7 +59,7 @@
         </section>
         <div class="splitter" data-split="details"></div>
         <section id="detailsPane" class="pane">
-          <div class="empty">Select commit to view changes</div>
+          <div class="empty"><strong>No commit selected</strong>Pick a commit in the log to see its message and changed files.</div>
         </section>
       </main>
 
@@ -62,18 +67,21 @@
         <section id="changesPane" class="pane">
           <div id="changesList" class="changes"></div>
           <div class="commit-box">
-            <textarea id="commitMessage" placeholder="Commit message" spellcheck="true"></textarea>
+            <div class="message">
+              <textarea id="commitMessage" placeholder="Summary of the change&#10;&#10;Optional details after a blank line" spellcheck="true" aria-label="Commit message"></textarea>
+              <span id="subjectHint" class="subject-hint"></span>
+            </div>
             <div class="commit-actions">
-              <label><input type="checkbox" id="amend" /> Amend</label>
+              <label><input type="checkbox" id="amend" /> Amend last commit</label>
               <span class="spacer"></span>
-              <button id="commitBtn" class="primary">Commit</button>
-              <button id="commitPushBtn">Commit and Push</button>
+              <button id="commitPushBtn">Commit and push</button>
+              <button id="commitBtn" class="primary" title="Ctrl/Cmd+Enter">Commit</button>
             </div>
           </div>
         </section>
         <div class="splitter" data-split="changes"></div>
         <section id="changesDiff" class="pane">
-          <div class="empty">Select a file to see its changes</div>
+          <div class="empty"><strong>No file selected</strong>Pick a file to see its diff.</div>
         </section>
       </main>
 

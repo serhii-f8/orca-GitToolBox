@@ -46,9 +46,10 @@ const esc = (s) =>
 // ------------------------------------------------------------------------------------------------
 // State
 
-const LANE = 12
-const ROW_H = 22
-const COLORS = ['#d3b346', '#a874d4', '#3fa9a0', '#e06c5a', '#5b8def', '#57a64a', '#d97ac1', '#c4924a', '#4cb5d9', '#8f8fe0']
+const LANE = 14
+const ROW_H = 26
+// Lane colours: saturated enough to read on dark and light Orca themes, distinct at a glance.
+const COLORS = ['#e0a82e', '#9d6ff0', '#26a69a', '#ef6c4d', '#4f8ff7', '#5fb04a', '#e05fa8', '#c98a3c', '#2fa8d4', '#8a8ae6']
 
 const state = {
   workspaces: [],
@@ -338,7 +339,7 @@ async function loadWorkspaces(follow) {
   sel.innerHTML = ctx.workspaces
     .map((w) => {
       const branch = (w.branch ?? '').replace(/^refs\/heads\//, '')
-      return `<option value="${esc(w.path)}">${esc(w.name)}${branch && branch !== w.name ? ` · ${esc(branch)}` : ''}</option>`
+      return `<option value="${esc(w.path)}">${esc(w.name)}${branch && branch !== w.name ? ` (${esc(branch)})` : ''}</option>`
     })
     .join('')
   const focused = ctx.workspaces.find((w) => w.id === ctx.focused)
@@ -404,6 +405,24 @@ async function loadBranches() {
   state.branches = await req('git.branches')
   renderBranchSelect()
   renderTree()
+  renderBranchChip()
+}
+
+/** Current branch with its ahead/behind counts, next to the repository picker. */
+function renderBranchChip() {
+  const b = state.branches
+  const chip = $('#branchChip')
+  if (!b) return chip.classList.add('hidden')
+  const cur = b.locals.find((l) => l.current)
+  const name = b.head.branch ?? `detached ${b.head.sha?.slice(0, 8) ?? ''}`
+  const track = cur?.upstream
+    ? `${cur.behind ? `<span class="in" title="${cur.behind} incoming">↓${cur.behind}</span>` : ''}${cur.ahead ? `<span class="out" title="${cur.ahead} outgoing">↑${cur.ahead}</span>` : ''}`
+    : b.head.branch
+      ? '<span class="none" title="No upstream branch; Push sets one">local only</span>'
+      : ''
+  chip.innerHTML = `${icon('branch')}<span class="bname">${esc(name)}</span>${track}`
+  chip.title = cur?.upstream ? `${name} tracks ${cur.upstream}` : name
+  chip.classList.remove('hidden')
 }
 
 const favKey = () => state.repo ?? ''
@@ -711,7 +730,10 @@ async function loadLog(reset = true, keepSelection = true) {
       renderDetailsEmpty()
     }
     if (!state.commits.length) {
-      rowsEl.innerHTML = `<div class="empty">${state.filters.text || state.filters.author || state.filters.since ? 'No commits match the filters' : 'No commits yet'}</div>`
+      rowsEl.innerHTML =
+        state.filters.text || state.filters.author || state.filters.since || state.filters.ref !== 'all'
+          ? '<div class="empty"><strong>No matching commits</strong>Clear the text, user, date or branch filter to see more.</div>'
+          : '<div class="empty"><strong>No commits yet</strong>Make the first commit from the Changes tab.</div>'
     }
     return
   }
@@ -732,42 +754,62 @@ async function loadLog(reset = true, keepSelection = true) {
   }
 }
 
+const laneColor = (i) => COLORS[i % COLORS.length]
+
+/** A lane segment from (x1,y1) to (x2,y2): straight when vertical, an S-curve when it changes lane. */
+function seg(x1, y1, x2, y2, color) {
+  if (x1 === x2) return `<path d="M${x1} ${y1}V${y2}" stroke="${color}"/>`
+  const ym = (y1 + y2) / 2
+  return `<path d="M${x1} ${y1}C${x1} ${ym} ${x2} ${ym} ${x2} ${y2}" stroke="${color}"/>`
+}
+
 function graphSvg(row, commit, isHead) {
-  const x = (c) => c * LANE + LANE / 2 + 2
+  const x = (c) => c * LANE + LANE / 2 + 4
   const mid = ROW_H / 2
-  const col = (i) => COLORS[i % COLORS.length]
-  const w = Math.max(row.width, 1) * LANE + 4
-  let s = `<svg width="${w}" height="${ROW_H}" stroke-width="1.6" fill="none" stroke-linecap="round">`
-  for (const p of row.passes) s += `<line x1="${x(p.col)}" y1="0" x2="${x(p.col)}" y2="${ROW_H}" stroke="${col(p.color)}"/>`
-  for (const m of row.merges) s += `<line x1="${x(m.from)}" y1="0" x2="${x(row.col)}" y2="${mid}" stroke="${col(m.color)}"/>`
-  if (row.hasTop) s += `<line x1="${x(row.col)}" y1="0" x2="${x(row.col)}" y2="${mid}" stroke="${col(row.color)}"/>`
-  for (const p of row.parents) s += `<line x1="${x(row.col)}" y1="${mid}" x2="${x(p.to)}" y2="${ROW_H}" stroke="${col(p.color)}"/>`
+  const w = Math.max(row.width, 1) * LANE + 8
+  // Lines run a pixel past the row so neighbouring rows join without a seam.
+  const top = -1
+  const bottom = ROW_H + 1
+  let s = `<svg width="${w}" height="${ROW_H}" stroke-width="2" fill="none" stroke-linecap="round" aria-hidden="true">`
+  for (const p of row.passes) s += seg(x(p.col), top, x(p.col), bottom, laneColor(p.color))
+  for (const m of row.merges) s += seg(x(m.from), top, x(row.col), mid, laneColor(m.color))
+  if (row.hasTop) s += seg(x(row.col), top, x(row.col), mid, laneColor(row.color))
+  for (const p of row.parents) s += seg(x(row.col), mid, x(p.to), bottom, laneColor(p.color))
   const cx = x(row.col)
+  const c = laneColor(row.color)
   if (isHead) {
-    s += `<circle cx="${cx}" cy="${mid}" r="5" stroke="${col(row.color)}" fill="var(--bg)" stroke-width="1.6"/><circle cx="${cx}" cy="${mid}" r="2.4" fill="${col(row.color)}" stroke="none"/>`
+    s += `<circle cx="${cx}" cy="${mid}" r="6.5" fill="${c}" fill-opacity=".22" stroke="none"/><circle cx="${cx}" cy="${mid}" r="4" fill="${c}" stroke="var(--bg)" stroke-width="1.5"/>`
+  } else if (commit.parents.length > 1) {
+    s += `<circle cx="${cx}" cy="${mid}" r="3.4" fill="var(--bg)" stroke="${c}" stroke-width="2"/>`
   } else {
-    s += `<circle cx="${cx}" cy="${mid}" r="3.6" fill="${col(row.color)}" stroke="none"/>`
+    s += `<circle cx="${cx}" cy="${mid}" r="3.6" fill="${c}" stroke="var(--bg)" stroke-width="1.2"/>`
   }
   return s + '</svg>'
 }
 
-/** Ref badges, joining a local branch with its remote twin ("origin & main") as PhpStorm does. */
-function refBadges(refs) {
+/**
+ * Ref labels in the colour of the commit's lane, joining a local branch with its remote twin
+ * ("origin & main") as PhpStorm does. The icon tells the kind: branch, remote, tag.
+ */
+function refBadges(refs, lane = 0) {
   if (!refs.length) return ''
+  const style = `style="--lane:${laneColor(lane)}"`
   const locals = refs.filter((r) => r.type === 'local')
   const remotes = refs.filter((r) => r.type === 'remote')
   const used = new Set()
   const out = []
-  for (const r of refs) if (r.type === 'head') out.push(`<span class="ref head">${icon('head')}HEAD</span>`)
+  for (const r of refs) if (r.type === 'head') out.push(`<span class="ref head" ${style} title="Detached HEAD">${icon('head')}HEAD</span>`)
   for (const l of locals) {
     const twins = remotes.filter((r) => r.name.slice(r.name.indexOf('/') + 1) === l.name)
     twins.forEach((t) => used.add(t.name))
     const label = twins.length ? `${twins.map((t) => t.name.slice(0, t.name.indexOf('/'))).join(' & ')} & ${l.name}` : l.name
-    out.push(`<span class="ref local${l.current ? ' current' : ''}" title="${esc(label)}">${icon('tag')}${esc(label)}</span>`)
+    const tip = l.current ? `${label} (current branch)` : label
+    out.push(`<span class="ref local${l.current ? ' current' : ''}" ${style} title="${esc(tip)}">${icon('branch')}<span>${esc(label)}</span></span>`)
   }
-  for (const r of remotes) if (!used.has(r.name)) out.push(`<span class="ref remote" title="${esc(r.name)}">${icon('tag')}${esc(r.name)}</span>`)
-  for (const r of refs) if (r.type === 'tag') out.push(`<span class="ref tag" title="tag ${esc(r.name)}">${icon('tag')}${esc(r.name)}</span>`)
-  return out.join('')
+  for (const r of remotes)
+    if (!used.has(r.name)) out.push(`<span class="ref remote" ${style} title="${esc(r.name)}">${icon('cloud')}<span>${esc(r.name)}</span></span>`)
+  for (const r of refs) if (r.type === 'tag') out.push(`<span class="ref tag" title="Tag ${esc(r.name)}">${icon('tag')}<span>${esc(r.name)}</span></span>`)
+  return `<span class="refs">${out.join('')}</span>`
 }
 
 function appendRows(start) {
@@ -780,15 +822,15 @@ function appendRows(start) {
     const c = state.commits[i]
     const row = state.rowLayout[i]
     maxLanes = Math.max(maxLanes, row.width)
-    const cls = ['row', c.parents.length > 1 ? 'dim' : '', c.hash === state.selected ? 'selected' : ''].filter(Boolean).join(' ')
+    const cls = ['row', c.parents.length > 1 ? 'merge' : '', c.hash === state.selected ? 'selected' : ''].filter(Boolean).join(' ')
     html.push(
-      `<div class="${cls}" data-i="${i}"><div class="graph">${graphSvg(row, c, c.hash === headSha)}</div><div class="subject">${refBadges(c.refs)}<span class="text" title="${esc(c.subject)}">${esc(c.subject)}</span></div><div class="author" title="${esc(c.author)} <${esc(c.email)}>">${esc(c.author)}</div><div class="date" title="${esc(new Date(c.time).toLocaleString())}">${esc(shortDate(c.time))}</div></div>`
+      `<div class="${cls}" data-i="${i}" style="--lane:${laneColor(row.color)}"><div class="graph">${graphSvg(row, c, c.hash === headSha)}</div><div class="subject">${refBadges(c.refs, row.color)}<span class="text" title="${esc(c.subject)}">${esc(c.subject)}</span></div><div class="author" title="${esc(c.author)} <${esc(c.email)}>">${esc(c.author)}</div><div class="date" title="${esc(new Date(c.time).toLocaleString())}">${esc(shortDate(c.time))}</div></div>`
     )
   }
   rowsEl.insertAdjacentHTML('beforeend', html.join(''))
-  if (state.hasMore) rowsEl.insertAdjacentHTML('beforeend', '<div class="more">Loading more…</div>')
+  if (state.hasMore) rowsEl.insertAdjacentHTML('beforeend', '<div class="more"><span class="spinner"></span>Loading older commits</div>')
   state.graphLanes = Math.min(maxLanes, 24)
-  document.documentElement.style.setProperty('--graph-w', `${state.graphLanes * LANE + 8}px`)
+  document.documentElement.style.setProperty('--graph-w', `${state.graphLanes * LANE + 12}px`)
 }
 
 function markSelected(i, scroll = true) {
@@ -863,7 +905,7 @@ async function copySubject(c) {
 
 function renderDetailsEmpty() {
   state.details = null
-  $('#detailsPane').innerHTML = '<div class="empty">Select commit to view changes</div>'
+  $('#detailsPane').innerHTML = '<div class="empty"><strong>No commit selected</strong>Pick a commit in the log to see its message and changed files.</div>'
   $('#logView').classList.add('no-details')
 }
 
@@ -885,11 +927,35 @@ function splitPath(p) {
   return i < 0 ? { name: p, dir: '' } : { name: p.slice(i + 1), dir: p.slice(0, i) }
 }
 
+const STATUS_NAMES = { A: 'Added', M: 'Modified', D: 'Deleted', R: 'Renamed', C: 'Copied', U: 'Conflict', '?': 'Unversioned', T: 'Type changed' }
+
 function fileRow(f, i, extra = '') {
   const { name, dir } = splitPath(f.path)
   const st = f.status
-  const title = f.oldPath ? `${f.oldPath} → ${f.path}` : f.path
-  return `<div class="file" data-i="${i}" title="${esc(title)}"><span class="st st-${esc(st)}">${esc(st)}</span><span class="name n-${esc(st)}">${esc(name)}</span><span class="dir">${esc(dir)}</span>${extra}</div>`
+  const title = `${STATUS_NAMES[st] ?? st}: ${f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}`
+  return `<div class="file" data-i="${i}" title="${esc(title)}"><span class="st st-${esc(st)}" aria-label="${esc(STATUS_NAMES[st] ?? st)}">${esc(st === '?' ? 'N' : st)}</span><span class="name n-${esc(st)}">${esc(name)}</span><span class="dir">${esc(dir)}</span>${extra}</div>`
+}
+
+function initials(name) {
+  const parts = String(name ?? '?').trim().split(/[\s._-]+/).filter(Boolean)
+  return ((parts[0]?.[0] ?? '?') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase()
+}
+function nameColor(name) {
+  let h = 0
+  for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) >>> 0
+  return COLORS[h % COLORS.length]
+}
+
+function relative(ms) {
+  const s = Math.round((Date.now() - ms) / 1000)
+  if (s < 60) return 'just now'
+  const m = Math.round(s / 60)
+  if (m < 60) return `${m} min ago`
+  const h = Math.round(m / 60)
+  if (h < 24) return `${h} h ago`
+  const d = Math.round(h / 24)
+  if (d < 30) return `${d} day${d === 1 ? '' : 's'} ago`
+  return new Date(ms).toLocaleDateString()
 }
 
 function renderDetails() {
@@ -897,32 +963,45 @@ function renderDetails() {
   const pane = $('#detailsPane')
   const [subject, ...bodyLines] = d.message.split('\n')
   const body = bodyLines.join('\n').trim()
-  const refs = refBadges(d.refs)
+  const rowIndex = state.commits.findIndex((c) => c.hash === d.hash)
+  const lane = rowIndex >= 0 ? state.rowLayout[rowIndex].color : 0
+  const refs = refBadges(d.refs, lane)
   const committer = d.committer && (d.committer !== d.author || Math.abs(d.commitTime - d.time) > 60_000)
-  const contained = d.containedIn.length
-    ? `<div class="meta-line">In ${d.containedIn.length} branch${d.containedIn.length === 1 ? '' : 'es'}: ${d.containedIn
-        .slice(0, 12)
+  const branches = d.containedIn.length
+    ? `<div class="meta-row"><span class="k">Branches</span><span class="v">${d.containedIn
+        .slice(0, 8)
         .map((b) => esc(b))
-        .join(', ')}${d.containedIn.length > 12 ? ', …' : ''}</div>`
+        .join(', ')}${d.containedIn.length > 8 ? ` and ${d.containedIn.length - 8} more` : ''}</span></div>`
     : ''
+  const n = d.files.length
   pane.innerHTML = `
-    <div class="d-head"><span class="title">${d.files.length} file${d.files.length === 1 ? '' : 's'} changed</span></div>
-    <div class="d-files">${d.files.map((f, i) => fileRow(f, i)).join('') || '<div class="empty">No file changes</div>'}</div>
-    <div class="d-meta">
-      <p class="msg"><span class="subj">${esc(subject)}</span>${body ? `\n\n${esc(body)}` : ''}</p>
+    <div class="d-commit" style="--lane:${laneColor(lane)}">
+      <div class="d-author">
+        <span class="avatar" style="--av:${nameColor(d.author)}" aria-hidden="true">${esc(initials(d.author))}</span>
+        <div class="who">
+          <div class="name" title="${esc(d.email)}">${esc(d.author)}</div>
+          <div class="when" title="${esc(new Date(d.time).toLocaleString())}">${esc(relative(d.time))}</div>
+        </div>
+        <button class="hash-chip" data-copy="${esc(d.hash)}" title="Copy full hash">${icon('copy')}${esc(d.hash.slice(0, 8))}</button>
+      </div>
+      <h2 class="d-subject">${esc(subject)}</h2>
+      ${body ? `<p class="d-body">${esc(body)}</p>` : ''}
       ${refs ? `<div class="refs-line">${refs}</div>` : ''}
-      <div class="meta-line"><a class="hash" data-copy="${esc(d.hash)}" title="Copy">${esc(d.hash.slice(0, 10))}</a> ${esc(d.author)} &lt;${esc(d.email)}&gt; on ${esc(new Date(d.time).toLocaleString())}</div>
-      ${committer ? `<div class="meta-line">committed by ${esc(d.committer)} on ${esc(new Date(d.commitTime).toLocaleString())}</div>` : ''}
-      ${d.parents.length ? `<div class="meta-line">Parent${d.parents.length > 1 ? 's' : ''}: ${d.parents.map((p) => `<a class="hash" data-goto="${esc(p)}">${esc(p.slice(0, 8))}</a>`).join(', ')}</div>` : ''}
-      ${contained}
-    </div>`
+      <div class="meta">
+        ${committer ? `<div class="meta-row"><span class="k">Committed</span><span class="v">${esc(d.committer)}, ${esc(new Date(d.commitTime).toLocaleString())}</span></div>` : ''}
+        ${d.parents.length ? `<div class="meta-row"><span class="k">${d.parents.length > 1 ? 'Parents' : 'Parent'}</span><span class="v">${d.parents.map((p) => `<a class="hash" data-goto="${esc(p)}" title="Go to commit">${esc(p.slice(0, 8))}</a>`).join(' ')}</span></div>` : ''}
+        ${branches}
+      </div>
+    </div>
+    <div class="d-head"><span class="title">${n ? `${n} changed file${n === 1 ? '' : 's'}` : 'No file changes'}</span>${d.parents.length > 1 ? '<span class="hint">compared with first parent</span>' : ''}</div>
+    <div class="d-files">${d.files.map((f, i) => fileRow(f, i)).join('')}</div>`
   $('.d-files', pane).onclick = (e) => {
     const el = /** @type {HTMLElement} */ (e.target).closest('.file')
     if (el) void showCommitDiff(d.files[Number(el.dataset.i)])
   }
-  $('.d-meta', pane).onclick = (e) => {
-    const a = /** @type {HTMLElement} */ (e.target).closest('a')
-    if (!a) return
+  $('.d-commit', pane).onclick = (e) => {
+    const a = /** @type {HTMLElement} */ (e.target).closest('[data-copy],[data-goto]')
+    if (!(a instanceof HTMLElement)) return
     if (a.dataset.copy) void copyText(a.dataset.copy)
     if (a.dataset.goto) gotoCommit(a.dataset.goto)
   }
@@ -1001,7 +1080,7 @@ function renderBanner() {
   if (st?.inProgress) {
     const conflicts = st.files.filter((f) => f.kind === 'conflict').length
     const label = { merge: 'Merge', rebase: 'Rebase', 'cherry-pick': 'Cherry-pick', revert: 'Revert' }[st.inProgress]
-    banner.innerHTML = `<span>${esc(label)} in progress${conflicts ? ` · ${conflicts} conflict${conflicts === 1 ? '' : 's'}` : ''}. Resolve and commit in the Changes tab, or abort.</span><button class="secondary" data-abort>Abort ${esc(label.toLowerCase())}</button>`
+    banner.innerHTML = `<span>${esc(label)} in progress${conflicts ? ` with ${conflicts} conflict${conflicts === 1 ? '' : 's'}` : ''}. Resolve the files in Changes and commit, or abort.</span><button class="secondary" data-abort>Abort ${esc(label.toLowerCase())}</button>`
     banner.classList.remove('hidden')
     $('[data-abort]', banner).onclick = async () => {
       const ok = await ask({ title: `Abort ${label.toLowerCase()}?`, message: 'Changes made by this operation will be discarded.', ok: 'Abort', danger: true })
@@ -1072,8 +1151,17 @@ function renderChanges() {
       btn('plus', 'Add all to Git', 'data-a="stageGroup" data-g="untracked"'),
       (i) => btn('plus', 'Add to Git', `data-a="stage" data-i="${i}"`) + btn('trash', 'Delete…', `data-a="discard" data-i="${i}"`)
     )
-  $('#changesList').innerHTML = html || '<div class="empty">No local changes</div>'
+  $('#changesList').innerHTML = html || '<div class="empty"><strong>Working tree clean</strong>Edits to tracked files and new files show up here.</div>'
   updateCommitButtons()
+}
+
+function updateSubjectHint() {
+  const msg = $('#commitMessage').value
+  const len = msg.split('\n')[0].length
+  const hint = $('#subjectHint')
+  hint.textContent = len ? `${len}/72` : ''
+  hint.classList.toggle('over', len > 72)
+  hint.title = len > 72 ? 'Subject lines read best at 72 characters or fewer' : 'Subject line length'
 }
 
 function updateCommitButtons() {
@@ -1081,7 +1169,8 @@ function updateCommitButtons() {
   const any = g.staged.length + g.unstaged.length > 0
   const amend = /** @type {HTMLInputElement} */ ($('#amend')).checked
   for (const b of [$('#commitBtn'), $('#commitPushBtn')]) /** @type {HTMLButtonElement} */ (b).disabled = !any && !amend
-  $('#commitBtn').textContent = amend ? 'Amend Commit' : g.staged.length ? `Commit ${g.staged.length} Staged` : 'Commit'
+  $('#commitBtn').textContent = amend ? 'Amend commit' : g.staged.length ? `Commit ${g.staged.length} staged` : 'Commit'
+  $('#commitPushBtn').textContent = amend ? 'Amend and push' : 'Commit and push'
 }
 
 async function onChangesClick(e) {
@@ -1130,7 +1219,7 @@ async function onChangesClick(e) {
 
 async function showWorkingDiff(f) {
   const pane = $('#changesDiff')
-  pane.innerHTML = `<div class="d-head"><span class="st st-${esc(f.status)}">${esc(f.status)}</span><span class="title" title="${esc(f.path)}">${esc(f.path)}</span><span class="spacer"></span><span>${f.group === 'staged' ? 'Staged' : f.group === 'untracked' ? 'New file' : 'Working tree'}</span></div><div class="diff"><div class="info">Loading…</div></div>`
+  pane.innerHTML = `<div class="d-head"><span class="st st-${esc(f.status)}">${esc(f.status === "?" ? "N" : f.status)}</span><span class="title" title="${esc(f.path)}">${esc(f.path)}</span><span class="spacer"></span><span>${f.group === 'staged' ? 'Staged' : f.group === 'untracked' ? 'New file' : 'Working tree'}</span></div><div class="diff"><div class="info">Loading…</div></div>`
   try {
     const res = await req('git.diff', {
       path: f.path,
@@ -1168,8 +1257,9 @@ async function commit(push) {
   const done = await tryAct('commit', { message, amend, all, push }, { success: push ? 'Committed and pushed' : amend ? 'Commit amended' : 'Committed', timeoutMs: 120_000 })
   if (done) {
     msgEl.value = ''
+    updateSubjectHint()
     $('#amend').checked = false
-    $('#changesDiff').innerHTML = '<div class="empty">Select a file to see its changes</div>'
+    $('#changesDiff').innerHTML = '<div class="empty"><strong>No file selected</strong>Pick a file to see its diff.</div>'
     updateCommitButtons()
   }
 }
@@ -1181,6 +1271,7 @@ async function onAmendToggle() {
     try {
       const d = await req('git.details', { hash: 'HEAD' })
       if (!msgEl.value.trim()) msgEl.value = d.message
+      updateSubjectHint()
     } catch {}
   }
   updateCommitButtons()
@@ -1499,6 +1590,7 @@ function wire() {
   $('#commitBtn').addEventListener('click', () => void commit(false))
   $('#commitPushBtn').addEventListener('click', () => void commit(true))
   $('#amend').addEventListener('change', () => void onAmendToggle())
+  $('#commitMessage').addEventListener('input', updateSubjectHint)
   $('#commitMessage').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault()
