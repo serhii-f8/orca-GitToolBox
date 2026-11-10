@@ -10,7 +10,9 @@
     <div id="app">
       <header class="toolbar">
         <div class="where">
-          <select id="repo" title="Repository" aria-label="Repository"></select>
+          <button id="switcher" class="switcher-btn" aria-haspopup="dialog" aria-expanded="false" title="Switch project or worktree (Ctrl/Cmd+K)">
+            <span class="proj"></span><span class="wt"></span><span class="chev" data-icon="chevronDown"></span>
+          </button>
           <span id="branchChip" class="branch-chip hidden"></span>
         </div>
         <span class="spacer"></span>
@@ -85,6 +87,17 @@
         </section>
       </main>
 
+      <div id="switcherPop" class="switcher hidden" role="dialog" aria-label="Switch project or worktree">
+        <div class="search">
+          <span data-icon="search"></span>
+          <input id="switcherFilter" placeholder="Find a project, worktree or branch" spellcheck="false" autocomplete="off" />
+        </div>
+        <div id="switcherList" class="switcher-list" role="listbox"></div>
+        <div class="switcher-foot">
+          <label><input type="checkbox" id="followFocus" checked /> Follow the workspace open in Orca</label>
+          <span class="keys">Enter shows Git, Shift+Enter also opens it in Orca</span>
+        </div>
+      </div>
       <div id="menu" class="menu hidden" role="menu"></div>
       <div id="modal" class="modal hidden"></div>
       <div id="toasts" class="toasts"></div>

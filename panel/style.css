@@ -129,11 +129,186 @@ svg {
   min-width: 0;
   flex: 0 1 auto;
 }
-.where select#repo {
-  font-weight: 600;
+.switcher-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 300px;
+  height: 28px;
+  padding: 0 6px 0 8px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.switcher-btn:hover,
+.switcher-btn[aria-expanded='true'] {
+  background: var(--hover);
+}
+.switcher-btn .proj {
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+}
+.switcher-btn .wt {
+  color: var(--muted-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+}
+.switcher-btn .wt::before {
+  content: '/';
+  margin-right: 6px;
+  opacity: 0.5;
+}
+.switcher-btn .chev {
+  color: var(--muted-fg);
+  flex: none;
+}
+.switcher-btn .chev svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* The switcher: worktrees grouped under their project. */
+.switcher {
+  position: fixed;
+  z-index: 55;
+  width: min(420px, calc(100vw - 12px));
+  max-height: min(70vh, 520px);
+  display: flex;
+  flex-direction: column;
+  background: var(--popover);
+  color: var(--popover-fg);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 4px);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 0.38);
+  animation: pop 0.12s ease-out;
+  overflow: hidden;
+}
+.switcher .search {
+  margin: 8px;
+}
+.switcher-list {
+  flex: 1;
+  overflow: auto;
+  padding: 0 6px 6px;
+}
+.sw-group {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 10px 8px 4px;
+  font-weight: 650;
+}
+.sw-group .n {
+  color: var(--muted-fg);
+  font-weight: 400;
+  font-size: 11.5px;
+}
+.sw-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 4px 0 10px;
+  border-radius: var(--radius);
+  cursor: default;
+  white-space: nowrap;
+  min-width: 0;
+}
+.sw-item.active {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.sw-item.disabled {
+  opacity: 0.45;
+}
+.sw-item .ico {
+  color: var(--muted-fg);
+  flex: none;
+}
+.sw-item .ico svg {
+  width: 14px;
+  height: 14px;
+}
+.sw-item .nm {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.sw-item.current .nm {
+  font-weight: 650;
+}
+.sw-item .b {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--muted-fg);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.sw-item .b svg {
+  width: 11px;
+  height: 11px;
+  flex: none;
+}
+.sw-item .here {
+  flex: none;
+  font-size: 11px;
+  padding: 0 6px;
+  border-radius: 999px;
+  line-height: 17px;
+  color: var(--c-in);
+  background: color-mix(in srgb, var(--c-in) 15%, transparent);
+}
+.sw-item .tick {
   color: var(--fg);
-  max-width: 200px;
-  min-width: 60px;
+  flex: none;
+}
+.sw-item .tick svg {
+  width: 14px;
+  height: 14px;
+}
+.sw-item .go {
+  width: 24px;
+  height: 24px;
+  visibility: hidden;
+}
+.sw-item.active .go,
+.sw-item:hover .go {
+  visibility: visible;
+}
+.sw-item .go svg {
+  width: 14px;
+  height: 14px;
+}
+.switcher-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  color: var(--muted-fg);
+  font-size: 12px;
+}
+.switcher-foot label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: var(--fg);
+}
+.switcher-foot .keys {
+  margin-left: auto;
 }
 .branch-chip {
   display: inline-flex;
@@ -397,8 +572,8 @@ select optgroup {
 #app.narrow .row .date {
   width: 64px;
 }
-#app.narrow .where select#repo {
-  max-width: 120px;
+#app.narrow .switcher-btn {
+  max-width: 190px;
 }
 #app.narrow .filters select {
   max-width: 82px;

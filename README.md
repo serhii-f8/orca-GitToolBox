@@ -5,6 +5,11 @@ A PhpStorm-style Git panel for [Orca](https://github.com/stablyai/orca), with Gi
 ## Features
 
 **Git panel (right sidebar → Git)**
+- **Project and worktree switcher:** click the project name in the toolbar (or press Ctrl/Cmd+K in the panel) to see
+  every Orca workspace grouped under its repository. Type to filter, Enter shows that worktree's Git, and
+  Shift+Enter or the open button also opens it in Orca. By default the panel follows the workspace open in Orca.
+- **Quiet refresh:** data refreshes in the background after actions, fetches and window focus. Only what changed
+  is redrawn; scroll positions, the selected commit and open diffs stay put.
 - **Branch tree:** HEAD, Local (current and favorites first, `/` grouped into folders), Remote (per remote) and Tags.
   Shows incoming ↙ and outgoing ↗ commit counts against the upstream, and marks upstreams that are *gone*.
   Click a branch to filter the log; double-click to check it out. The context menu has checkout, new branch,

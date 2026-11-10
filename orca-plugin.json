@@ -115,6 +115,9 @@
       "kind": "workspace:read"
     },
     {
+      "kind": "workspace:write"
+    },
+    {
       "kind": "notifications:show"
     },
     {

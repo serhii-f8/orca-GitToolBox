@@ -43,14 +43,97 @@ function safe(fn) {
 // ---------------------------------------------------------------------------------------------
 // Workspaces
 
-/** @param {any} orca */
+/**
+ * Which repository each workspace belongs to, so the panel can group worktrees under their project.
+ * Asked once per path and cached: it never changes for a worktree.
+ * @type {Map<string, Promise<{ git: boolean; project: string | null; root: string | null; main: boolean }>>}
+ */
+const projectCache = new Map()
+
+/** @param {string} path */
+function projectOf(path) {
+  let hit = projectCache.get(path)
+  if (!hit) {
+    hit = runGit(path, ['rev-parse', '--path-format=absolute', '--git-common-dir', '--show-toplevel'], {
+      timeoutMs: 15_000
+    }).then(
+      (out) => {
+        const [common, top] = out.trim().split('\n')
+        const root = common.replace(/\/\.git\/?$/, '')
+        const name = root.split('/').filter(Boolean).pop() ?? root
+        return { git: true, project: name.replace(/\.git$/, ''), root, main: top === root }
+      },
+      () => ({ git: false, project: null, root: null, main: false })
+    )
+    projectCache.set(path, hit)
+    // A path that failed (offline distro, folder not yet a repo) is asked again next time.
+    void hit.then((r) => (r.git ? undefined : projectCache.delete(path)))
+  }
+  return hit
+}
+
+/** Runs fn over items with at most `limit` in flight: each git call starts a wsl.exe process. */
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length)
+  let next = 0
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++
+      out[i] = await fn(items[i])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return out
+}
+
+/** Resolved project info by path, so answers never wait on paths already asked. */
+const projectKnown = new Map()
+
+/** A first guess from the path while git is asked: Orca keeps worktrees in .../workspaces/<project>/<name>. */
+function guessProject(path) {
+  const parts = path.replace(/\\/g, '/').split('/').filter(Boolean)
+  const i = parts.lastIndexOf('workspaces')
+  return i >= 0 && parts[i + 1] && i + 2 < parts.length ? parts[i + 1] : (parts.at(-1) ?? path)
+}
+
+let resolving = null
+
+/**
+ * Answers at once from what is known; the focused workspace is resolved before answering, the
+ * rest in the background, after which the panel hears `workspaces.updated` and asks again.
+ * @param {any} orca
+ */
 async function listWorkspaces(orca) {
   const [{ workspaces }, context] = await Promise.all([
     orca.host.call('workspace.list'),
     orca.host.call('workspace.readContext').catch(() => null)
   ])
   const usable = workspaces.filter((w) => !w.hostId || w.hostId === 'local')
-  return { workspaces: usable, focused: matchFocused(usable, context) }
+  const focused = matchFocused(usable, context)
+  const remember = (w) => projectOf(w.path).then((info) => projectKnown.set(w.path, info))
+  const focusedWs = usable.find((w) => w.id === focused)
+  if (focusedWs && !projectKnown.has(focusedWs.path)) await remember(focusedWs)
+
+  const unknown = usable.filter((w) => !projectKnown.has(w.path))
+  if (unknown.length && !resolving) {
+    resolving = mapLimit(unknown, 6, remember)
+      .then(() => orca.panels.post('workspaces.updated', {}))
+      .catch(() => undefined)
+      .finally(() => (resolving = null))
+  }
+
+  const enriched = usable.map((w) => {
+    const info = projectKnown.get(w.path) ?? { git: true, project: guessProject(w.path), root: null, main: false, pending: true }
+    return {
+      id: w.id,
+      kind: w.kind,
+      name: w.name,
+      path: w.path,
+      branch: (w.branch ?? '').replace(/^refs\/heads\//, '') || null,
+      ...info
+    }
+  })
+  return { workspaces: enriched, focused }
 }
 
 /** readContext has no id or path; match it to workspace.list by name and branch. */
@@ -485,6 +568,14 @@ export default async function activate(orca) {
   const tracker = createStatusTracker(orca)
 
   orca.panels.handle('repo.context', safe(() => listWorkspaces(orca)))
+  orca.panels.handle(
+    'workspace.focus',
+    safe(async (i) => {
+      if (typeof i.workspaceId !== 'string' || !i.workspaceId) throw new GitError('Missing workspace')
+      await orca.host.call('workspace.open', { workspaceId: i.workspaceId })
+      return { opened: true }
+    })
+  )
   orca.panels.handle('git.branches', safe((i) => branches(repoOf(i))))
   orca.panels.handle('git.log', safe((i) => log(repoOf(i), i)))
   orca.panels.handle('git.authors', safe((i) => authors(repoOf(i))))

@@ -29,7 +29,10 @@ const ICONS = {
   back: '<path d="M10 3.5 5.5 8l4.5 4.5"/>',
   copy: '<rect x="5.5" y="5.5" width="8" height="8" rx="1"/><path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/>',
   head: '<circle cx="8" cy="8" r="3"/><circle cx="8" cy="8" r="6"/>',
-  close: '<path d="m4 4 8 8M12 4l-8 8"/>'
+  close: '<path d="m4 4 8 8M12 4l-8 8"/>',
+  chevronDown: '<path d="m4 6 4 4 4-4"/>',
+  open: '<path d="M9 3h4v4"/><path d="M13 3 7.5 8.5"/><path d="M11 9.5V13H3V5h3.5"/>',
+  check: '<path d="m3.5 8.5 3 3 6-7"/>'
 }
 const icon = (name, cls = '') =>
   `<svg class="${cls}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] ?? ''}</svg>`
@@ -75,7 +78,11 @@ const state = {
   changeSel: /** @type {string | null} */ (null),
   pageSize: 300,
   busy: 0,
-  acting: false
+  acting: false,
+  workspacesSig: '',
+  focusedId: /** @type {string | null | undefined} */ (undefined),
+  follow: true,
+  sig: { log: '', branches: '', status: '' }
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -109,7 +116,7 @@ async function act(op, args = {}, { success, quiet = false, timeoutMs = 120_000,
     throw err
   } finally {
     state.acting = false
-    if (refresh) void refreshAll({ keepSelection: true })
+    if (refresh) void refreshAll()
   }
 }
 
@@ -321,12 +328,17 @@ const shortDate = (ms) => {
 // Workspaces
 
 let wsTimer = null
-function scheduleWorkspaces(follow) {
+function scheduleWorkspaces() {
   clearTimeout(wsTimer)
-  wsTimer = setTimeout(() => void loadWorkspaces(follow), 150)
+  wsTimer = setTimeout(() => void loadWorkspaces(), 300)
 }
 
-async function loadWorkspaces(follow) {
+/**
+ * Reads Orca's workspaces. Follows Orca's focus only when the focused workspace actually changes:
+ * `workspace.changed` also fires for every terminal opened, closed or renamed, and those must not
+ * move the panel off the repository the person is looking at.
+ */
+async function loadWorkspaces() {
   let ctx
   try {
     ctx = await req('repo.context')
@@ -334,57 +346,107 @@ async function loadWorkspaces(follow) {
     showFatal(err)
     return
   }
+  const listSig = JSON.stringify(ctx.workspaces)
+  const listChanged = listSig !== state.workspacesSig
   state.workspaces = ctx.workspaces
-  const sel = /** @type {HTMLSelectElement} */ ($('#repo'))
-  sel.innerHTML = ctx.workspaces
-    .map((w) => {
-      const branch = (w.branch ?? '').replace(/^refs\/heads\//, '')
-      return `<option value="${esc(w.path)}">${esc(w.name)}${branch && branch !== w.name ? ` (${esc(branch)})` : ''}</option>`
-    })
-    .join('')
-  const focused = ctx.workspaces.find((w) => w.id === ctx.focused)
+  state.workspacesSig = listSig
+  const focusMoved = ctx.focused !== state.focusedId
+  state.focusedId = ctx.focused
+
+  const focused = ctx.workspaces.find((w) => w.id === ctx.focused && w.git)
   let next = state.repo
-  if ((follow && focused) || !next || !ctx.workspaces.some((w) => w.path === next)) {
-    next = focused?.path ?? ctx.workspaces[0]?.path ?? null
+  if (focusMoved && focused && state.follow) next = focused.path
+  if (!next || !ctx.workspaces.some((w) => w.path === next && w.git)) {
+    next = focused?.path ?? ctx.workspaces.find((w) => w.git)?.path ?? null
   }
-  if (next) sel.value = next
   if (next !== state.repo) await setRepo(next)
-  else if (!next) showFatal(new Error('No Git workspaces in Orca yet. Add a repository to start.'))
+  else if (listChanged || focusMoved) renderSwitcherButton()
+  if (!next) showFatal(new Error('Add a Git repository or worktree to Orca to see it here.'))
+  if (listChanged && switcherOpen()) renderSwitcherList()
 }
 
 function showFatal(err) {
-  $('#rows').innerHTML = `<div class="empty">${esc(err?.message ?? err)}</div>`
+  $('#rows').innerHTML = `<div class="empty"><strong>Nothing to show</strong>${esc(err?.message ?? err)}</div>`
 }
 
 async function setRepo(path) {
   state.repo = path
   state.repoName = state.workspaces.find((w) => w.path === path)?.name ?? ''
   state.filters = { ref: 'all', text: '', author: '', since: '' }
+  state.sig = { log: '', branches: '', status: '' }
   $('#textFilter').value = ''
   $('#userSelect').value = ''
   $('#dateSelect').value = ''
   state.selected = null
   state.branchSel = null
   state.changeSel = null
+  state.branches = null
+  renderSwitcherButton()
   renderDetailsEmpty()
+  $('#changesDiff').innerHTML = '<div class="empty"><strong>No file selected</strong>Pick a file to see its diff.</div>'
   if (!path) return
-  await refreshAll({ keepSelection: false })
+  $('#rows').innerHTML = '<div class="more"><span class="spinner"></span>Reading history</div>'
+  $('#branchTree').innerHTML = ''
+  await refreshAll({ background: false })
   void loadAuthors()
 }
 
 // ------------------------------------------------------------------------------------------------
 // Refresh
+//
+// A foreground refresh (new repository, new filter) redraws the log. A background refresh (after
+// an action, a fetch, the window regaining focus, the refresh button) asks git again and only
+// touches what changed, keeping scroll positions, the selected commit and any open diff.
 
-let refreshing = null
-async function refreshAll({ keepSelection = true } = {}) {
-  if (!state.repo) return
-  if (refreshing) return refreshing
-  refreshing = (async () => {
-    const results = await Promise.allSettled([loadBranches(), loadStatus(), loadLog(true, keepSelection)])
+const refreshing = new Map()
+async function refreshAll({ background = true } = {}) {
+  const repo = state.repo
+  if (!repo) return
+  const key = `${repo}\n${background}`
+  if (refreshing.has(key)) return refreshing.get(key)
+  const run = (async () => {
+    const results = await Promise.allSettled([
+      loadBranches(),
+      loadStatus(),
+      background ? refreshLog() : loadLog(true, false)
+    ])
     const failed = results.find((r) => r.status === 'rejected')
-    if (failed) toastError('Could not read the repository', /** @type {any} */ (failed).reason)
-  })().finally(() => (refreshing = null))
-  return refreshing
+    if (failed && repo === state.repo) toastError('Could not read the repository', /** @type {any} */ (failed).reason)
+  })().finally(() => refreshing.delete(key))
+  refreshing.set(key, run)
+  return run
+}
+
+const logSig = (commits) =>
+  commits.map((c) => c.hash + ':' + c.refs.map((r) => r.type + r.name + (r.current ? '*' : '')).join(',')).join('|')
+
+/** Re-reads the loaded part of the log; redraws only when commits or refs changed. */
+async function refreshLog() {
+  const repo = state.repo
+  const token = ++state.logToken
+  const limit = Math.min(Math.max(state.pageSize, state.commits.length), 5000)
+  const res = await req('git.log', { ...state.filters, skip: 0, limit })
+  if (token !== state.logToken || repo !== state.repo) return
+  const sig = logSig(res.commits) + (res.hasMore ? '+' : '')
+  if (sig === state.sig.log) return
+  state.sig.log = sig
+  const rowsEl = $('#rows')
+  const scroll = rowsEl.scrollTop
+  state.commits = res.commits
+  state.hasMore = res.hasMore
+  state.graph = createGraph()
+  state.rowLayout = state.graph.add(res.commits)
+  rowsEl.innerHTML = ''
+  appendRows(0)
+  rowsEl.scrollTop = scroll
+  const keep = state.selected ? state.commits.findIndex((c) => c.hash === state.selected) : -1
+  if (keep >= 0) markSelected(keep, false)
+  else if (state.selected) {
+    // The selected commit is gone (amended, reset or filtered out): say so instead of a stale view.
+    state.selected = null
+    renderDetailsEmpty()
+  }
+  if (!state.commits.length) renderLogEmpty()
 }
 
 async function loadAuthors() {
@@ -402,10 +464,20 @@ async function loadAuthors() {
 // Branch tree
 
 async function loadBranches() {
-  state.branches = await req('git.branches')
+  const repo = state.repo
+  const branches = await req('git.branches')
+  if (repo !== state.repo) return
+  const sig = JSON.stringify(branches)
+  state.branches = branches
+  if (sig === state.sig.branches) return
+  state.sig.branches = sig
   renderBranchSelect()
+  const tree = $('#branchTree')
+  const scroll = tree.scrollTop
   renderTree()
+  tree.scrollTop = scroll
   renderBranchChip()
+  renderSwitcherButton()
 }
 
 /** Current branch with its ahead/behind counts, next to the repository picker. */
@@ -695,6 +767,13 @@ function setRefFilter(ref) {
   void loadLog(true, true)
 }
 
+function renderLogEmpty() {
+  $('#rows').innerHTML =
+    state.filters.text || state.filters.author || state.filters.since || state.filters.ref !== 'all'
+      ? '<div class="empty"><strong>No matching commits</strong>Clear the text, user, date or branch filter to see more.</div>'
+      : '<div class="empty"><strong>No commits yet</strong>Make the first commit from the Changes tab.</div>'
+}
+
 async function loadLog(reset = true, keepSelection = true) {
   const token = ++state.logToken
   const rowsEl = $('#rows')
@@ -720,21 +799,16 @@ async function loadLog(reset = true, keepSelection = true) {
     rowsEl.innerHTML = ''
     appendRows(0)
     state.loadingLog = false
+    state.sig.log = logSig(res.commits) + (res.hasMore ? '+' : '')
     const keep = keepSelection && state.selected ? state.commits.findIndex((c) => c.hash === state.selected) : -1
     if (keep >= 0) {
       markSelected(keep, false)
-      // Refresh the details too: refs and "contained in" may have changed.
-      void loadDetails(/** @type {string} */ (state.selected))
+      if (state.details?.hash !== state.selected) void loadDetails(/** @type {string} */ (state.selected))
     } else {
       state.selected = null
       renderDetailsEmpty()
     }
-    if (!state.commits.length) {
-      rowsEl.innerHTML =
-        state.filters.text || state.filters.author || state.filters.since || state.filters.ref !== 'all'
-          ? '<div class="empty"><strong>No matching commits</strong>Clear the text, user, date or branch filter to see more.</div>'
-          : '<div class="empty"><strong>No commits yet</strong>Make the first commit from the Changes tab.</div>'
-    }
+    if (!state.commits.length) renderLogEmpty()
     return
   }
   if (state.loadingLog || !state.hasMore) return
@@ -746,6 +820,7 @@ async function loadLog(reset = true, keepSelection = true) {
     state.commits.push(...res.commits)
     state.rowLayout.push(...state.graph.add(res.commits))
     state.hasMore = res.hasMore
+    state.sig.log = logSig(state.commits) + (res.hasMore ? '+' : '')
     appendRows(start)
   } catch (err) {
     toastError('Could not load more commits', err)
@@ -1067,11 +1142,29 @@ function diffHtml(text, truncated) {
 // Local changes
 
 async function loadStatus() {
-  state.status = await req('git.status')
-  const n = state.status.files.length
+  const repo = state.repo
+  const status = await req('git.status')
+  if (repo !== state.repo) return
+  const sig = JSON.stringify(status)
+  state.status = status
+  if (sig === state.sig.status) return
+  state.sig.status = sig
+  const n = status.files.length
   $('#changesCount').textContent = n ? String(n) : ''
   renderBanner()
+  const list = $('#changesList')
+  const scroll = list.scrollTop
   renderChanges()
+  list.scrollTop = scroll
+  // Keep the open diff: refresh it in place if the file is still changed, else say it is gone.
+  if (state.changeSel) {
+    const f = changeRows.find((r) => `${r.group}:${r.path}` === state.changeSel)
+    if (f) void showWorkingDiff(f, { quiet: true })
+    else {
+      state.changeSel = null
+      $('#changesDiff').innerHTML = '<div class="empty"><strong>No changes left in this file</strong>It was committed, staged elsewhere or rolled back.</div>'
+    }
+  }
 }
 
 function renderBanner() {
@@ -1217,8 +1310,29 @@ async function onChangesClick(e) {
   }
 }
 
-async function showWorkingDiff(f) {
+async function showWorkingDiff(f, { quiet = false } = {}) {
   const pane = $('#changesDiff')
+  const key = `${f.group}:${f.path}`
+  if (quiet && pane.dataset.key === key && $('.diff', pane)) {
+    // Background refresh: swap the diff body only when it changed, keeping its scroll position.
+    try {
+      const res = await req('git.diff', {
+        path: f.path,
+        oldPath: f.group === 'staged' ? f.oldPath : undefined,
+        staged: f.group === 'staged',
+        untracked: f.group === 'untracked'
+      })
+      const old = $('.diff', pane)
+      if (!old || pane.dataset.key !== key || old.dataset.sig === res.diff) return
+      const scroll = old.scrollTop
+      old.outerHTML = diffHtml(res.diff, res.truncated)
+      const fresh = $('.diff', pane)
+      fresh.dataset.sig = res.diff
+      fresh.scrollTop = scroll
+    } catch {}
+    return
+  }
+  pane.dataset.key = key
   pane.innerHTML = `<div class="d-head"><span class="st st-${esc(f.status)}">${esc(f.status === "?" ? "N" : f.status)}</span><span class="title" title="${esc(f.path)}">${esc(f.path)}</span><span class="spacer"></span><span>${f.group === 'staged' ? 'Staged' : f.group === 'untracked' ? 'New file' : 'Working tree'}</span></div><div class="diff"><div class="info">Loading…</div></div>`
   try {
     const res = await req('git.diff', {
@@ -1227,7 +1341,9 @@ async function showWorkingDiff(f) {
       staged: f.group === 'staged',
       untracked: f.group === 'untracked'
     })
+    if (pane.dataset.key !== key) return
     $('.diff', pane).outerHTML = diffHtml(res.diff, res.truncated)
+    $('.diff', pane).dataset.sig = res.diff
   } catch (err) {
     $('.diff', pane).innerHTML = `<div class="info">${esc(err.message)}</div>`
   }
@@ -1424,6 +1540,186 @@ async function push(branch) {
 }
 
 // ------------------------------------------------------------------------------------------------
+// Project and worktree switcher
+
+const currentWs = () => state.workspaces.find((w) => w.path === state.repo)
+const switcherOpen = () => !$('#switcherPop').classList.contains('hidden')
+
+function renderSwitcherButton() {
+  const w = currentWs()
+  const btn = $('#switcher')
+  $('.proj', btn).textContent = w?.project ?? (w ? '' : 'Choose a repository')
+  $('.wt', btn).textContent = w ? w.name : ''
+  $('.wt', btn).classList.toggle('hidden', !w || w.name === w.project)
+  btn.title = w ? `${w.project ?? ''} / ${w.name}\n${w.path}\nSwitch project or worktree (Ctrl/Cmd+K)` : 'Switch project or worktree (Ctrl/Cmd+K)'
+}
+
+/** Workspaces grouped by project, filtered by the search text. */
+function switcherGroups() {
+  const q = $('#switcherFilter').value.trim().toLowerCase()
+  const groups = new Map()
+  for (const w of state.workspaces) {
+    const project = w.project ?? 'Not a Git repository'
+    const hay = `${project} ${w.name} ${w.branch ?? ''}`.toLowerCase()
+    if (q && !q.split(/\s+/).every((t) => hay.includes(t))) continue
+    if (!groups.has(project)) groups.set(project, [])
+    groups.get(project).push(w)
+  }
+  const cur = currentWs()?.project
+  return [...groups.entries()]
+    .map(([project, list]) => [
+      project,
+      list.sort((a, b) => Number(b.main) - Number(a.main) || a.name.localeCompare(b.name, undefined, { numeric: true }))
+    ])
+    .sort((a, b) => {
+      const rank = (p, l) => (p === cur ? 0 : l.some((w) => w.git) ? 1 : 2)
+      return rank(a[0], a[1]) - rank(b[0], b[1]) || a[0].localeCompare(b[0])
+    })
+}
+
+let switcherItems = []
+let switcherActive = 0
+function renderSwitcherList() {
+  const list = $('#switcherList')
+  switcherItems = []
+  const html = []
+  for (const [project, items] of switcherGroups()) {
+    html.push(`<div class="sw-group"><span class="pname">${esc(project)}</span><span class="n">${items.length}</span></div>`)
+    for (const w of items) {
+      const i = switcherItems.push(w) - 1
+      const current = w.path === state.repo
+      const focused = w.id === state.focusedId
+      const branch = w.branch && w.branch !== w.name ? `<span class="b">${icon('branch')}${esc(w.branch)}</span>` : ''
+      html.push(
+        `<div class="sw-item${current ? ' current' : ''}${w.git ? '' : ' disabled'}" role="option" aria-selected="${current}" data-i="${i}" title="${esc(w.path)}">` +
+          `<span class="ico">${icon(w.main ? 'folder' : 'branch')}</span>` +
+          `<span class="nm">${esc(w.name)}</span>${branch}` +
+          `${focused ? '<span class="here" title="Open in Orca now">in Orca</span>' : ''}` +
+          `<span class="spacer"></span>${current ? `<span class="tick">${icon('check')}</span>` : ''}` +
+          (w.git && !focused ? `<button class="icon go" data-open="${i}" title="Open this workspace in Orca" aria-label="Open in Orca">${icon('open')}</button>` : '') +
+          '</div>'
+      )
+    }
+  }
+  list.innerHTML = html.join('') || '<div class="empty"><strong>No match</strong>Try a project, worktree or branch name.</div>'
+  const cur = switcherItems.findIndex((w) => w.path === state.repo)
+  switcherActive = Math.max(0, $('#switcherFilter').value ? switcherItems.findIndex((w) => w.git) : cur)
+  markSwitcherActive()
+}
+
+function markSwitcherActive() {
+  for (const el of $$('#switcherList .sw-item.active')) el.classList.remove('active')
+  const el = $(`#switcherList .sw-item[data-i="${switcherActive}"]`)
+  el?.classList.add('active')
+  el?.scrollIntoView({ block: 'nearest' })
+}
+
+function openSwitcher() {
+  const pop = $('#switcherPop')
+  const btn = $('#switcher')
+  const r = btn.getBoundingClientRect()
+  pop.style.left = `${Math.max(6, r.left)}px`
+  pop.style.top = `${r.bottom + 4}px`
+  pop.classList.remove('hidden')
+  btn.setAttribute('aria-expanded', 'true')
+  $('#switcherFilter').value = ''
+  renderSwitcherList()
+  $('#switcherFilter').focus()
+  // Refresh the list behind the scenes: new worktrees may exist since the panel loaded.
+  scheduleWorkspaces()
+}
+
+function closeSwitcher() {
+  $('#switcherPop').classList.add('hidden')
+  $('#switcher').setAttribute('aria-expanded', 'false')
+}
+
+async function pickWorkspace(w, { openInOrca = false } = {}) {
+  if (!w?.git) return
+  closeSwitcher()
+  if (w.path !== state.repo) await setRepo(w.path)
+  if (openInOrca) {
+    try {
+      await req('workspace.focus', { workspaceId: w.id })
+    } catch (err) {
+      toastError('Could not open the workspace in Orca', err)
+    }
+  }
+}
+
+function wireSwitcher() {
+  try {
+    state.follow = localStorage.getItem('gtb.follow') !== '0'
+  } catch {}
+  $('#followFocus').checked = state.follow
+  $('#followFocus').addEventListener('change', (e) => {
+    state.follow = /** @type {HTMLInputElement} */ (e.target).checked
+    try {
+      localStorage.setItem('gtb.follow', state.follow ? '1' : '0')
+    } catch {}
+    if (state.follow) {
+      const f = state.workspaces.find((w) => w.id === state.focusedId && w.git)
+      if (f && f.path !== state.repo) void pickWorkspace(f)
+    }
+  })
+  $('#switcher').addEventListener('click', () => (switcherOpen() ? closeSwitcher() : openSwitcher()))
+  $('#switcherFilter').addEventListener('input', renderSwitcherList)
+  $('#switcherFilter').addEventListener('keydown', (e) => {
+    const n = switcherItems.length
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      const step = e.key === 'ArrowDown' ? 1 : -1
+      for (let k = 1; k <= n; k++) {
+        const i = (switcherActive + step * k + n) % n
+        if (switcherItems[i].git) {
+          switcherActive = i
+          break
+        }
+      }
+      markSwitcherActive()
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      void pickWorkspace(switcherItems[switcherActive], { openInOrca: e.shiftKey })
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      closeSwitcher()
+      $('#switcher').focus()
+    }
+  })
+  $('#switcherList').addEventListener('click', (e) => {
+    const t = /** @type {HTMLElement} */ (e.target)
+    const go = t.closest('[data-open]')
+    if (go instanceof HTMLElement) {
+      e.stopPropagation()
+      void pickWorkspace(switcherItems[Number(go.dataset.open)], { openInOrca: true })
+      return
+    }
+    const item = t.closest('.sw-item')
+    if (item instanceof HTMLElement) void pickWorkspace(switcherItems[Number(item.dataset.i)])
+  })
+  $('#switcherList').addEventListener('mousemove', (e) => {
+    const item = /** @type {HTMLElement} */ (e.target).closest('.sw-item')
+    if (item instanceof HTMLElement && Number(item.dataset.i) !== switcherActive && !item.classList.contains('disabled')) {
+      switcherActive = Number(item.dataset.i)
+      markSwitcherActive()
+    }
+  })
+  document.addEventListener(
+    'mousedown',
+    (e) => {
+      if (switcherOpen() && !$('#switcherPop').contains(/** @type {Node} */ (e.target)) && !$('#switcher').contains(/** @type {Node} */ (e.target))) closeSwitcher()
+    },
+    true
+  )
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {
+      e.preventDefault()
+      switcherOpen() ? closeSwitcher() : openSwitcher()
+    }
+  })
+}
+
+// ------------------------------------------------------------------------------------------------
 // Layout: narrow mode and splitters
 
 function loadSizes() {
@@ -1514,7 +1810,7 @@ function setTab(tab) {
 
 let textTimer = null
 function wire() {
-  $('#repo').addEventListener('change', (e) => void setRepo(/** @type {HTMLSelectElement} */ (e.target).value))
+  wireSwitcher()
   for (const t of $$('.tab')) t.addEventListener('click', () => setTab(t.dataset.tab))
   for (const b of $$('[data-act]')) {
     b.addEventListener('click', () => {
@@ -1524,7 +1820,7 @@ function wire() {
       else if (a === 'push') void push()
       else if (a === 'newBranch') void newBranch('HEAD')
       else if (a === 'refresh') {
-        void refreshAll({ keepSelection: true })
+        void refreshAll()
         void loadAuthors()
       }
     })
@@ -1620,14 +1916,15 @@ async function init() {
   orca.plugin.on('repo.changed', (payload) => {
     if (!payload || payload.repo !== state.repo || state.acting) return
     clearTimeout(changedTimer)
-    changedTimer = setTimeout(() => void refreshAll({ keepSelection: true }), 300)
+    changedTimer = setTimeout(() => void refreshAll(), 300)
   })
-  orca.on('workspace.changed', () => scheduleWorkspaces(true))
+  orca.on('workspace.changed', () => scheduleWorkspaces())
+  orca.plugin.on('workspaces.updated', () => scheduleWorkspaces())
   window.addEventListener('focus', () => {
     if (state.repo && !state.acting) void loadStatus().catch(() => undefined)
   })
 
-  await loadWorkspaces(true)
+  await loadWorkspaces()
 }
 
 void init()
