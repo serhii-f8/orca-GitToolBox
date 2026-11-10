@@ -82,6 +82,8 @@ const state = {
   workspacesSig: '',
   focusedId: /** @type {string | null | undefined} */ (undefined),
   follow: true,
+  lastPickedId: /** @type {string | null} */ (null),
+  pickSeq: 0,
   sig: { log: '', branches: '', status: '' }
 }
 
@@ -334,35 +336,67 @@ function scheduleWorkspaces() {
 }
 
 /**
+ * Which workspace Orca has focused. Orca names it only by display name and branch, which several
+ * workspaces can share ("master" in every project), so ties go to what the person last picked or
+ * what the panel shows. Returns undefined when Orca reports no focus (Settings is open), null
+ * when the match stays ambiguous: neither moves the panel.
+ */
+function resolveFocus(ctx) {
+  if (!ctx.hasContext) return undefined
+  const ids = ctx.candidates ?? (ctx.focused ? [ctx.focused] : [])
+  if (!ids.length) return null
+  if (ids.length === 1) return ids[0]
+  for (const prefer of [state.lastPickedId, currentWs()?.id, state.focusedId]) if (prefer && ids.includes(prefer)) return prefer
+  return null
+}
+
+let wsSeq = 0
+/**
  * Reads Orca's workspaces. Follows Orca's focus only when the focused workspace actually changes:
  * `workspace.changed` also fires for every terminal opened, closed or renamed, and those must not
  * move the panel off the repository the person is looking at.
  */
 async function loadWorkspaces() {
+  const seq = ++wsSeq
+  const pickSeq = state.pickSeq
   let ctx
   try {
     ctx = await req('repo.context')
   } catch (err) {
-    showFatal(err)
+    if (seq === wsSeq && !state.repo) showFatal(err)
     return
   }
+  // A newer read started, or the person picked a workspace while this one was in flight:
+  // this answer is stale and must not move the panel.
+  if (seq !== wsSeq) return
   const listSig = JSON.stringify(ctx.workspaces)
   const listChanged = listSig !== state.workspacesSig
   state.workspaces = ctx.workspaces
   state.workspacesSig = listSig
-  const focusMoved = ctx.focused !== state.focusedId
-  state.focusedId = ctx.focused
 
-  const focused = ctx.workspaces.find((w) => w.id === ctx.focused && w.git)
+  const fid = resolveFocus(ctx)
+  const firstLoad = state.focusedId === undefined
+  let focusMoved = false
+  if (fid !== undefined && fid !== null && fid !== state.focusedId) {
+    focusMoved = true
+    state.focusedId = fid
+  } else if (firstLoad && fid === null) state.focusedId = null
+
   let next = state.repo
-  if (focusMoved && focused && state.follow) next = focused.path
-  if (!next || !ctx.workspaces.some((w) => w.path === next && w.git)) {
-    next = focused?.path ?? ctx.workspaces.find((w) => w.git)?.path ?? null
+  const focused = state.workspaces.find((w) => w.id === state.focusedId && w.git)
+  if (focusMoved && focused && state.follow && pickSeq === state.pickSeq) next = focused.path
+  if (!next) {
+    // First load: the workspace Orca shows, else the one picked last time, else any repository.
+    const last = state.workspaces.find((w) => w.id === state.lastPickedId && w.git)
+    next = focused?.path ?? last?.path ?? state.workspaces.find((w) => w.git)?.path ?? null
+  } else if (!state.workspaces.some((w) => w.path === next)) {
+    // The workspace was removed from Orca.
+    next = focused?.path ?? state.workspaces.find((w) => w.git)?.path ?? null
   }
   if (next !== state.repo) await setRepo(next)
   else if (listChanged || focusMoved) renderSwitcherButton()
   if (!next) showFatal(new Error('Add a Git repository or worktree to Orca to see it here.'))
-  if (listChanged && switcherOpen()) renderSwitcherList()
+  if ((listChanged || focusMoved) && switcherOpen()) renderSwitcherList()
 }
 
 function showFatal(err) {
@@ -1637,19 +1671,25 @@ function closeSwitcher() {
 async function pickWorkspace(w, { openInOrca = false } = {}) {
   if (!w?.git) return
   closeSwitcher()
-  if (w.path !== state.repo) await setRepo(w.path)
+  // A pick wins over any workspace read already in flight, and breaks later ties toward it.
+  state.pickSeq++
+  wsSeq++
+  state.lastPickedId = w.id
+  try {
+    localStorage.setItem('gtb.lastPicked', w.id)
+  } catch {}
   if (openInOrca) {
-    try {
-      await req('workspace.focus', { workspaceId: w.id })
-    } catch (err) {
-      toastError('Could not open the workspace in Orca', err)
-    }
+    // Orca will report this focus by name only; record it so it is not read as a move elsewhere.
+    state.focusedId = w.id
+    req('workspace.focus', { workspaceId: w.id }).catch((err) => toastError('Could not open the workspace in Orca', err))
   }
+  if (w.path !== state.repo) await setRepo(w.path)
 }
 
 function wireSwitcher() {
   try {
     state.follow = localStorage.getItem('gtb.follow') !== '0'
+    state.lastPickedId = localStorage.getItem('gtb.lastPicked')
   } catch {}
   $('#followFocus').checked = state.follow
   $('#followFocus').addEventListener('change', (e) => {

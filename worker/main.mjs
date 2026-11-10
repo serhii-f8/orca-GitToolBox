@@ -109,10 +109,13 @@ async function listWorkspaces(orca) {
     orca.host.call('workspace.readContext').catch(() => null)
   ])
   const usable = workspaces.filter((w) => !w.hostId || w.hostId === 'local')
-  const focused = matchFocused(usable, context)
+  const candidates = focusCandidates(usable, context)
+  const focused = candidates.length === 1 ? candidates[0] : null
   const remember = (w) => projectOf(w.path).then((info) => projectKnown.set(w.path, info))
-  const focusedWs = usable.find((w) => w.id === focused)
-  if (focusedWs && !projectKnown.has(focusedWs.path)) await remember(focusedWs)
+  for (const id of candidates.slice(0, 4)) {
+    const w = usable.find((x) => x.id === id)
+    if (w && !projectKnown.has(w.path)) await remember(w)
+  }
 
   const unknown = usable.filter((w) => !projectKnown.has(w.path))
   if (unknown.length && !resolving) {
@@ -133,21 +136,34 @@ async function listWorkspaces(orca) {
       ...info
     }
   })
-  return { workspaces: enriched, focused }
+  // `context` lets the panel tell "nothing focused" (Settings is open) from "focus unknown".
+  return { workspaces: enriched, focused, candidates, hasContext: !!context }
 }
 
-/** readContext has no id or path; match it to workspace.list by name and branch. */
-export function matchFocused(workspaces, context) {
-  if (!context) return null
+/**
+ * readContext has no id or path, only the display name and branch, and several workspaces can
+ * share both (every "master"). Returns every workspace that fits, best evidence first; callers
+ * break ties with what they already show instead of guessing.
+ * @returns {string[]}
+ */
+export function focusCandidates(workspaces, context) {
+  if (!context) return []
   const branch = (b) => (b ?? '').replace(/^refs\/heads\//, '')
   const byBoth = workspaces.filter(
     (w) => w.name === context.displayName && branch(w.branch) === branch(context.branch)
   )
-  if (byBoth.length) return byBoth[0].id
+  if (byBoth.length) return byBoth.map((w) => w.id)
   const byName = workspaces.filter((w) => w.name === context.displayName)
-  if (byName.length === 1) return byName[0].id
+  if (byName.length) return byName.map((w) => w.id)
   const byBranch = workspaces.filter((w) => context.branch && branch(w.branch) === branch(context.branch))
-  if (byBranch.length === 1) return byBranch[0].id
+  return byBranch.map((w) => w.id)
+}
+
+/** The one focused workspace, or null when there is none or the match is ambiguous. */
+export function matchFocused(workspaces, context, prefer = null) {
+  const ids = focusCandidates(workspaces, context)
+  if (ids.length === 1) return ids[0]
+  if (prefer && ids.includes(prefer)) return prefer
   return null
 }
 
@@ -540,10 +556,15 @@ function createStatusTracker(orca) {
     try {
       const { workspaces } = await orca.host.call('workspace.list')
       const usable = workspaces.filter((w) => !w.hostId || w.hostId === 'local')
-      const id = matchFocused(usable, context)
+      if (!context) return // Settings or another full page: keep showing the last repository
+      const current = usable.find((w) => w.path === repo)
+      const id = matchFocused(usable, context, current?.id ?? null)
       const ws = usable.find((w) => w.id === id)
-      repo = ws?.path ?? null
-      name = ws?.name ?? ''
+      // Ambiguous (two workspaces with the same name and branch): keep the current one.
+      if (ws) {
+        repo = ws.path
+        name = ws.name
+      }
     } catch (err) {
       orca.log(`workspace.list failed: ${err?.message ?? err}`)
     }
