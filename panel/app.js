@@ -84,7 +84,9 @@ async function req(name, input = {}, timeoutMs = 60_000) {
   state.busy++
   updateBusy()
   try {
-    return await orca.plugin.request(name, { repo: state.repo, ...input }, { timeoutMs })
+    // Orca accepts only plain JSON: drop `undefined` fields (e.g. a missing oldPath), which it refuses.
+    const payload = JSON.parse(JSON.stringify({ repo: state.repo, ...input }))
+    return await orca.plugin.request(name, payload, { timeoutMs })
   } finally {
     state.busy--
     updateBusy()
