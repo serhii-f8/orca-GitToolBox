@@ -833,10 +833,14 @@ select optgroup {
   color: color-mix(in srgb, var(--lane) 72%, var(--fg));
   background: color-mix(in srgb, var(--lane) 16%, transparent);
   overflow: hidden;
+  white-space: nowrap;
+  line-height: 18px;
 }
 .ref > span {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 .ref svg {
   width: 11px;
