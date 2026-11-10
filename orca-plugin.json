@@ -3,7 +3,7 @@
   "execution": "trusted-worker",
   "id": "git-toolbox",
   "name": "Git Toolbox",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A PhpStorm-style Git panel for Orca: branch tree with ahead/behind counts, commit graph log, commit details and diffs, local changes and commit, plus a status bar branch indicator with auto-fetch.",
   "license": "MIT",
   "repository": "https://github.com/serhii-f8/orca-GitToolBox",
