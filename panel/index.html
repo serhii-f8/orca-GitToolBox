@@ -1,0 +1,86 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Git</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="toolbar">
+        <select id="repo" title="Repository"></select>
+        <nav class="tabs" role="tablist">
+          <button class="tab active" data-tab="log" role="tab">Log</button>
+          <button class="tab" data-tab="changes" role="tab">Changes <span id="changesCount" class="count"></span></button>
+        </nav>
+        <span class="spacer"></span>
+        <span id="busy" class="spinner hidden" title="Working…"></span>
+        <button class="icon" data-act="fetch" title="Fetch all remotes" data-icon="fetch"></button>
+        <button class="icon" data-act="pull" title="Update project (pull)" data-icon="pull"></button>
+        <button class="icon" data-act="push" title="Push" data-icon="push"></button>
+        <button class="icon" data-act="newBranch" title="New branch…" data-icon="plus"></button>
+        <button class="icon" data-act="refresh" title="Refresh" data-icon="refresh"></button>
+      </header>
+      <div id="banner" class="banner hidden"></div>
+
+      <main id="logView" class="view">
+        <aside id="branchesPane" class="pane">
+          <div class="search">
+            <span data-icon="search"></span>
+            <input id="branchFilter" placeholder="Branch or tag" spellcheck="false" />
+          </div>
+          <div id="branchTree" class="tree" tabindex="0"></div>
+        </aside>
+        <div class="splitter" data-split="branches"></div>
+        <section id="logPane" class="pane">
+          <div class="filters">
+            <button class="icon" id="toggleBranches" title="Branches" data-icon="branch"></button>
+            <div class="search grow">
+              <span data-icon="search"></span>
+              <input id="textFilter" placeholder="Text or hash" spellcheck="false" />
+            </div>
+            <select id="branchSelect" title="Branch"></select>
+            <select id="userSelect" title="User"><option value="">User</option></select>
+            <select id="dateSelect" title="Date">
+              <option value="">Date</option>
+              <option value="24 hours ago">Last 24 hours</option>
+              <option value="7 days ago">Last 7 days</option>
+              <option value="30 days ago">Last 30 days</option>
+              <option value="1 year ago">Last year</option>
+            </select>
+          </div>
+          <div id="rows" class="rows" tabindex="0"></div>
+        </section>
+        <div class="splitter" data-split="details"></div>
+        <section id="detailsPane" class="pane">
+          <div class="empty">Select commit to view changes</div>
+        </section>
+      </main>
+
+      <main id="changesView" class="view hidden">
+        <section id="changesPane" class="pane">
+          <div id="changesList" class="changes"></div>
+          <div class="commit-box">
+            <textarea id="commitMessage" placeholder="Commit message" spellcheck="true"></textarea>
+            <div class="commit-actions">
+              <label><input type="checkbox" id="amend" /> Amend</label>
+              <span class="spacer"></span>
+              <button id="commitBtn" class="primary">Commit</button>
+              <button id="commitPushBtn">Commit and Push</button>
+            </div>
+          </div>
+        </section>
+        <div class="splitter" data-split="changes"></div>
+        <section id="changesDiff" class="pane">
+          <div class="empty">Select a file to see its changes</div>
+        </section>
+      </main>
+
+      <div id="menu" class="menu hidden" role="menu"></div>
+      <div id="modal" class="modal hidden"></div>
+      <div id="toasts" class="toasts"></div>
+    </div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

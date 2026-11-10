@@ -1,0 +1,9 @@
+node_modules/
+.orca/
+.idea/
+.serena/
+.vscode/
+.claude/
+.env*
+*.log
+.DS_Store

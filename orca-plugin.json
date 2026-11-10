@@ -1,0 +1,127 @@
+{
+  "manifestVersion": 2,
+  "execution": "trusted-worker",
+  "id": "git-toolbox",
+  "name": "Git Toolbox",
+  "version": "0.1.0",
+  "description": "A PhpStorm-style Git panel for Orca: branch tree with ahead/behind counts, commit graph log, commit details and diffs, local changes and commit, plus a status bar branch indicator with auto-fetch.",
+  "license": "MIT",
+  "repository": "https://github.com/serhii-f8/orca-GitToolBox",
+  "engines": {
+    "orca": ">=1.4.248"
+  },
+  "pluginApi": 1,
+  "main": "worker/main.mjs",
+  "contributes": {
+    "panels": [
+      {
+        "id": "git",
+        "title": "Git",
+        "icon": "branch",
+        "entry": "panel/index.html"
+      }
+    ],
+    "commands": [
+      {
+        "id": "gittoolbox.fetch",
+        "title": "Git Toolbox: Fetch",
+        "when": "workspace"
+      },
+      {
+        "id": "gittoolbox.pull",
+        "title": "Git Toolbox: Update (Pull)",
+        "when": "workspace"
+      },
+      {
+        "id": "gittoolbox.push",
+        "title": "Git Toolbox: Push",
+        "when": "workspace"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "gittoolbox.pull",
+        "key": "Mod+Shift+T"
+      }
+    ],
+    "events": [
+      {
+        "on": "workspace.changed"
+      }
+    ],
+    "statusBarItems": [
+      {
+        "id": "branch",
+        "text": "Git",
+        "icon": "branch",
+        "tooltip": "Git Toolbox: click to fetch",
+        "command": "gittoolbox.fetch"
+      }
+    ],
+    "settings": [
+      {
+        "key": "autoFetchMinutes",
+        "title": "Auto-fetch interval (minutes)",
+        "description": "Fetch all remotes of the focused repository in the background. 0 turns auto-fetch off.",
+        "type": "integer",
+        "default": 15,
+        "minimum": 0,
+        "maximum": 1440
+      },
+      {
+        "key": "statusRefreshSeconds",
+        "title": "Status bar refresh (seconds)",
+        "description": "How often the status bar re-reads the current branch and ahead/behind counts. 0 refreshes only on workspace changes and actions.",
+        "type": "integer",
+        "default": 30,
+        "minimum": 0,
+        "maximum": 3600
+      },
+      {
+        "key": "notifyBehind",
+        "title": "Notify when the branch falls behind",
+        "description": "After a background fetch, show a notification when the current branch has new incoming commits.",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "pullMode",
+        "title": "Update (pull) mode",
+        "type": "string",
+        "enum": [
+          "ff-only",
+          "merge",
+          "rebase"
+        ],
+        "enumLabels": [
+          "Fast-forward only",
+          "Merge",
+          "Rebase"
+        ],
+        "default": "merge"
+      },
+      {
+        "key": "logPageSize",
+        "title": "Commits loaded per page",
+        "type": "integer",
+        "default": 300,
+        "minimum": 50,
+        "maximum": 5000
+      }
+    ]
+  },
+  "capabilities": [
+    {
+      "kind": "workspace:read"
+    },
+    {
+      "kind": "notifications:show"
+    },
+    {
+      "kind": "storage:own"
+    },
+    {
+      "kind": "settings:own"
+    }
+  ]
+}
