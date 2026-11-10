@@ -1,6 +1,6 @@
 # Git Toolbox for Orca
 
-A PhpStorm-style Git panel for [Orca](https://github.com/stablyai/orca). See every branch as a commit graph, inspect
+A full Git panel for [Orca](https://github.com/stablyai/orca). See every branch as a commit graph, inspect
 commits and diffs, stage and commit, and switch between projects and worktrees without leaving Orca. It also keeps
 the current branch and its incoming and outgoing commits in the status bar, in the spirit of
 [GitToolBox](https://www.gittoolbox.com/).

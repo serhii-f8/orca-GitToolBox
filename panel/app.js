@@ -898,7 +898,7 @@ function graphSvg(row, commit, isHead) {
 
 /**
  * Ref labels in the colour of the commit's lane, joining a local branch with its remote twin
- * ("origin & main") as PhpStorm does. The icon tells the kind: branch, remote, tag.
+ * ("origin & main"). The icon tells the kind: branch, remote, tag.
  */
 function refBadges(refs, lane = 0) {
   if (!refs.length) return ''

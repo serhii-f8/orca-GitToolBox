@@ -344,7 +344,7 @@ async function action(orca, repo, a) {
       return runGit(repo, args, net)
     }
     case 'updateBranch': {
-      // Fast-forward a branch that is not checked out from its upstream ("Update" in PhpStorm).
+      // Fast-forward a branch that is not checked out from its upstream ("Update").
       const name = assertRefName(a.branch, 'branch')
       const up = (await runGit(repo, ['rev-parse', '--abbrev-ref', `${name}@{upstream}`])).trim()
       const slash = up.indexOf('/')
