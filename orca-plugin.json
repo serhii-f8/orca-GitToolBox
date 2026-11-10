@@ -3,10 +3,41 @@
   "execution": "trusted-worker",
   "id": "git-toolbox",
   "name": "Git Toolbox",
-  "version": "0.2.0",
-  "description": "A PhpStorm-style Git panel for Orca: branch tree with ahead/behind counts, commit graph log, commit details and diffs, local changes and commit, plus a status bar branch indicator with auto-fetch.",
+  "version": "0.3.0",
+  "description": "A PhpStorm-style Git panel: commit graph with branch labels, branch tree with incoming and outgoing counts, commit details and diffs, staging and commits, a project and worktree switcher, a status bar branch indicator and background fetch.",
   "license": "MIT",
   "repository": "https://github.com/serhii-f8/orca-GitToolBox",
+  "icon": "media/icon.png",
+  "cover": {
+    "path": "media/cover.png",
+    "alt": "Git Toolbox panel showing a commit graph with coloured lanes, a branch tree and commit details"
+  },
+  "screenshots": [
+    {
+      "path": "media/log-dark.png",
+      "alt": "Log view: branch tree, commit graph with branch labels, and the selected commit with its changed files",
+      "caption": "Commit graph, branch tree and commit details",
+      "theme": "dark"
+    },
+    {
+      "path": "media/changes-dark.png",
+      "alt": "Changes view: staged, changed and new files, a diff of a staged file and the commit message box",
+      "caption": "Stage files, review diffs and commit",
+      "theme": "dark"
+    },
+    {
+      "path": "media/switcher-dark.png",
+      "alt": "Switcher listing worktrees grouped by project, with search",
+      "caption": "Switch projects and worktrees",
+      "theme": "dark"
+    },
+    {
+      "path": "media/log-light.png",
+      "alt": "Log view in a light theme",
+      "caption": "Follows your Orca theme",
+      "theme": "light"
+    }
+  ],
   "engines": {
     "orca": ">=1.4.248"
   },
@@ -36,6 +67,20 @@
         "id": "gittoolbox.push",
         "title": "Git Toolbox: Push",
         "when": "workspace"
+      },
+      {
+        "id": "gittoolbox.showLog",
+        "title": "Git Toolbox: Show Log",
+        "when": "workspace"
+      },
+      {
+        "id": "gittoolbox.showChanges",
+        "title": "Git Toolbox: Show Changes",
+        "when": "workspace"
+      },
+      {
+        "id": "gittoolbox.switch",
+        "title": "Git Toolbox: Switch Project or Worktree"
       }
     ],
     "keybindings": [

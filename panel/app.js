@@ -522,7 +522,7 @@ function renderBranchChip() {
   const cur = b.locals.find((l) => l.current)
   const name = b.head.branch ?? `detached ${b.head.sha?.slice(0, 8) ?? ''}`
   const track = cur?.upstream
-    ? `${cur.behind ? `<span class="in" title="${cur.behind} incoming">↓${cur.behind}</span>` : ''}${cur.ahead ? `<span class="out" title="${cur.ahead} outgoing">↑${cur.ahead}</span>` : ''}`
+    ? `${cur.behind ? `<span class="in" title="${cur.behind} incoming">↙${cur.behind}</span>` : ''}${cur.ahead ? `<span class="out" title="${cur.ahead} outgoing">↗${cur.ahead}</span>` : ''}`
     : b.head.branch
       ? '<span class="none" title="No upstream branch; Push sets one">local only</span>'
       : ''
@@ -1935,6 +1935,25 @@ function wire() {
   })
 }
 
+/** Palette commands: switch tab, open the switcher, optionally select the first item. */
+async function showView({ tab, switcher, select }) {
+  if (tab === 'log' || tab === 'changes') setTab(tab)
+  if (switcher) {
+    if (!switcherOpen()) openSwitcher()
+    return
+  }
+  if (select !== 'first') return
+  if (tab === 'changes') {
+    await loadStatus().catch(() => undefined)
+    const first = changeRows[0]
+    if (first) {
+      state.changeSel = `${first.group}:${first.path}`
+      renderChanges()
+      void showWorkingDiff(first)
+    }
+  } else if (state.commits.length) selectRow(0)
+}
+
 let changedTimer = null
 async function init() {
   applyIcons()
@@ -1960,6 +1979,7 @@ async function init() {
   })
   orca.on('workspace.changed', () => scheduleWorkspaces())
   orca.plugin.on('workspaces.updated', () => scheduleWorkspaces())
+  orca.plugin.on('ui.show', (view) => void showView(view ?? {}))
   window.addEventListener('focus', () => {
     if (state.repo && !state.acting) void loadStatus().catch(() => undefined)
   })

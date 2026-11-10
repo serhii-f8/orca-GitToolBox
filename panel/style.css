@@ -1253,6 +1253,12 @@ select optgroup {
   gap: 6px;
   flex-wrap: wrap;
 }
+/* The two commit buttons stay together; on a narrow pane they wrap below the checkbox as a pair. */
+.commit-buttons {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
 .commit-actions label {
   display: flex;
   align-items: center;

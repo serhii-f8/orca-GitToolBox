@@ -629,6 +629,16 @@ export default async function activate(orca) {
       return `${op} failed: ${err?.message ?? err}`
     }
   }
+  // Views of the open Git panel, for the palette and shortcuts. `select: 'first'` also selects the
+  // newest commit or changed file, so the view opens with something in it.
+  const show = (view) => {
+    orca.panels.post('ui.show', view)
+    return 'Shown in the Git panel (open it from the right sidebar if it is hidden)'
+  }
+  orca.panels.handle('ui.show', safe((i) => ({ shown: show(i) })))
+  orca.commands.register('gittoolbox.showLog', () => show({ tab: 'log' }))
+  orca.commands.register('gittoolbox.showChanges', () => show({ tab: 'changes' }))
+  orca.commands.register('gittoolbox.switch', () => show({ switcher: true }))
   orca.commands.register('gittoolbox.fetch', runOnFocused('fetch'))
   orca.commands.register('gittoolbox.pull', runOnFocused('pull'))
   orca.commands.register('gittoolbox.push', runOnFocused('push'))
