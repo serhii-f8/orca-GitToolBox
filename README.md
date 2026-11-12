@@ -1,7 +1,7 @@
 # Git Toolbox for Orca
 
 A full Git panel for [Orca](https://github.com/stablyai/orca). See every branch as a commit graph, inspect
-commits and diffs, stage and commit, and switch between projects and worktrees without leaving Orca. It also keeps
+commits and diffs, stage and commit, resolve merge conflicts side by side, and switch between projects and worktrees without leaving Orca. It also keeps
 the current branch and its incoming and outgoing commits in the status bar, in the spirit of
 [GitToolBox](https://www.gittoolbox.com/).
 
@@ -46,7 +46,27 @@ the right sidebar under the branch icon.
 - A diff preview that stays open and updates in place while you work.
 - Commit, amend, and commit and push (Ctrl/Cmd+Enter commits); the message box shows the subject length against 72
   characters.
-- During a merge, rebase, cherry-pick or revert, a banner offers to abort it.
+- During a merge, rebase, cherry-pick or revert, a banner shows its state and offers to abort it.
+
+### Merge conflicts
+
+![Merge view: yours, the result and theirs side by side, with conflicting chunks highlighted](media/merge-dark.png)
+
+- When a pull, merge, rebase, cherry-pick, revert or stash pop stops on conflicts, the **Conflicts** dialog opens
+  with every conflicted file. Pick one or more files and **Accept Yours** or **Accept Theirs**, or **Merge…** a file.
+  The banner's *Resolve conflicts…* brings the dialog back; in Changes, double-click a conflicted file or use its
+  context menu.
+- **Merge view:** yours on the left, the result in the middle, theirs on the right, aligned chunk by chunk.
+  Conflicts are red, changes made on one side only are blue. `»` / `«` take a side for a chunk (take both to keep
+  both, in the order you click), `×` ignores it, and the result is plain text you can edit anywhere.
+  *Apply non-conflicting* takes every one-sided change at once; F7 and Shift+F7 jump between conflicts.
+- **Apply** saves and stages the file. It asks first if conflicts are left, and Cancel asks before throwing away
+  your choices. If the file was edited by hand after the conflict, the view says so and can start from it.
+- Pane headers name the sides: the branches of a merge, the upstream and your commit in a rebase, the picked
+  commit in a cherry-pick.
+- Binary, very large and deleted-on-one-side files are resolved whole, with Yours or Theirs.
+- Once nothing is in conflict, the banner offers **Commit merge**, or **Continue** and **Skip this commit** for a
+  rebase, cherry-pick or revert. After a stash pop it offers to drop the stash git kept.
 
 ### Projects and worktrees
 
@@ -88,13 +108,14 @@ The plugin runs a Node worker on the Orca host that runs `git` in your workspace
 
 `worker/main.mjs` runs git and answers the panel (`panel/app.js`) over Orca's plugin requests. When Orca runs on
 Windows and a workspace lives in WSL (`\\wsl.localhost\<distro>\...`), git runs inside the distro through
-`wsl.exe --exec`, so it uses Linux git, its credentials and its speed. Commit messages reach git through stdin, and
+`wsl.exe --exec`, so it uses Linux git, its credentials and its speed. Conflict resolutions are written through git too
+(the result is stored as a blob, staged and checked out), so line endings follow your git settings. Commit messages reach git through stdin, and
 branch names typed in the panel are checked before they reach git.
 
 ## Development
 
 ```sh
-npm test                          # parsers, graph layout, focus matching and a real temporary repository
+npm test                          # parsers, graph layout, three-way merge, focus matching and real temporary repositories
 orca plugin dev watch . --json    # on the Orca host (a Windows path for a folder in WSL)
 ```
 

@@ -3,8 +3,8 @@
   "execution": "trusted-worker",
   "id": "git-toolbox",
   "name": "Git Toolbox",
-  "version": "0.3.1",
-  "description": "A full Git panel for Orca: commit graph with branch labels, branch tree with incoming and outgoing counts, commit details and diffs, staging and commits, a project and worktree switcher, a status bar branch indicator and background fetch.",
+  "version": "0.4.0",
+  "description": "A full Git panel for Orca: commit graph with branch labels, branch tree with incoming and outgoing counts, commit details and diffs, staging and commits, side-by-side merge conflict resolution, a project and worktree switcher, a status bar branch indicator and background fetch.",
   "license": "MIT",
   "repository": "https://github.com/serhii-f8/orca-GitToolBox",
   "icon": "media/icon.png",
@@ -23,6 +23,12 @@
       "path": "media/changes-dark.png",
       "alt": "Changes view: staged, changed and new files, a diff of a staged file and the commit message box",
       "caption": "Stage files, review diffs and commit",
+      "theme": "dark"
+    },
+    {
+      "path": "media/merge-dark.png",
+      "alt": "Merge view: your version, the editable result and their version side by side, with conflicting chunks highlighted and buttons to take either side",
+      "caption": "Resolve conflicts chunk by chunk",
       "theme": "dark"
     },
     {
