@@ -28,9 +28,26 @@ export async function operationInProgress(repo) {
       (o) => o.trim().length > 0,
       () => false
     )
-  const [merge, rebase, cherryPick, revert] = await Promise.all(
-    ['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD'].map(verify)
-  )
+  // A rebase is in progress while git's rebase-merge (or rebase-apply) folder exists: git keeps
+  // REBASE_HEAD after a rebase that stopped on conflicts has finished, so that ref proves nothing.
+  // `git -C <dir> version` fails when the folder is missing; it works through WSL too.
+  const exists = async (name) => {
+    try {
+      const p = (await runGit(repo, ['rev-parse', '--git-path', name])).trim()
+      await runGit(repo, ['-C', p, 'version'])
+      return true
+    } catch {
+      return false
+    }
+  }
+  const [merge, rebaseMerge, rebaseApply, cherryPick, revert] = await Promise.all([
+    verify('MERGE_HEAD'),
+    exists('rebase-merge'),
+    exists('rebase-apply'),
+    verify('CHERRY_PICK_HEAD'),
+    verify('REVERT_HEAD')
+  ])
+  const rebase = rebaseMerge || rebaseApply
   return merge ? 'merge' : rebase ? 'rebase' : cherryPick ? 'cherry-pick' : revert ? 'revert' : null
 }
 

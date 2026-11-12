@@ -480,8 +480,12 @@ select optgroup {
   background: color-mix(in srgb, var(--c-conflict) 13%, var(--bg));
   border-bottom: 1px solid color-mix(in srgb, var(--c-conflict) 35%, var(--border));
 }
-.banner button {
+.banner .acts {
   margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
   flex: none;
 }
 
@@ -1515,5 +1519,305 @@ button.primary:disabled {
   *::after {
     animation: none !important;
     transition: none !important;
+  }
+}
+
+/* ================================================================ conflicts dialog */
+.dialog.conflicts {
+  width: min(620px, calc(100% - 24px));
+}
+.cf-sides {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  color: var(--muted-fg);
+}
+.cf-sides b {
+  color: var(--fg);
+  font-weight: 600;
+  margin-right: 4px;
+}
+.cf-main {
+  display: flex;
+  gap: 10px;
+  min-height: 0;
+}
+.cf-list {
+  flex: 1;
+  min-width: 0;
+  max-height: 46vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  outline: none;
+  padding: 3px;
+}
+.cf-list:focus-visible {
+  border-color: var(--ring);
+}
+.cf-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: calc(var(--radius) - 2px);
+  cursor: default;
+  white-space: nowrap;
+}
+.cf-row:hover {
+  background: var(--hover);
+}
+.cf-row.selected {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.cf-row .name {
+  color: var(--c-conflict);
+  font-weight: 500;
+}
+.cf-row .dir {
+  color: var(--muted-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+}
+.cf-row .type {
+  color: var(--muted-fg);
+  font-size: 11.5px;
+}
+.cf-acts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: none;
+}
+.cf-done {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg) !important;
+}
+.cf-done svg {
+  width: 16px;
+  height: 16px;
+  color: var(--c-added);
+}
+.cf-finish {
+  display: flex;
+  gap: 6px;
+}
+@media (max-width: 520px) {
+  .cf-main {
+    flex-direction: column;
+  }
+  .cf-acts {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+}
+
+/* ================================================================ merge view */
+.merge {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  --m-conflict: color-mix(in srgb, var(--c-conflict) 16%, transparent);
+  --m-change: color-mix(in srgb, var(--c-modified) 15%, transparent);
+  --m-same: color-mix(in srgb, var(--muted-fg) 10%, transparent);
+}
+.m-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+}
+.m-count {
+  color: var(--c-conflict);
+  font-weight: 600;
+  margin: 0 6px;
+  white-space: nowrap;
+}
+.m-count.ok {
+  color: var(--c-added);
+}
+.m-path {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 40%;
+}
+.m-bar button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.m-warn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: color-mix(in srgb, var(--c-new) 14%, var(--bg));
+  border-bottom: 1px solid color-mix(in srgb, var(--c-new) 35%, var(--border));
+}
+.m-warn button {
+  margin-left: auto;
+}
+.m-heads,
+.m-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40px minmax(0, 1fr) 40px minmax(0, 1fr);
+}
+.m-heads {
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted-fg);
+}
+.m-heads > div {
+  padding: 5px 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.m-heads b {
+  color: var(--fg);
+  margin-right: 4px;
+}
+.m-body {
+  flex: 1;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 19px;
+  tab-size: 4;
+  padding-bottom: 40vh;
+  outline: none;
+}
+.m-side,
+.m-res {
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  min-height: 4px;
+}
+.ml {
+  display: flex;
+}
+.ml .no {
+  width: 38px;
+  flex: none;
+  text-align: right;
+  padding-right: 8px;
+  color: var(--muted-fg);
+  opacity: 0.55;
+  font-size: 11px;
+  user-select: none;
+}
+.ml .tx {
+  flex: 1;
+  min-width: 0;
+  padding-right: 8px;
+}
+.m-res {
+  padding: 0 10px;
+  outline: none;
+  border-left: 1px solid var(--soft-border);
+  border-right: 1px solid var(--soft-border);
+}
+.m-res:focus {
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+.m-gut {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 1px;
+  padding-top: 1px;
+}
+.m-take,
+.m-ign {
+  height: 17px;
+  min-width: 17px;
+  padding: 0 3px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted-fg);
+  font: 600 13px/17px var(--sans);
+  cursor: pointer;
+}
+.m-take {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+}
+.m-take:hover {
+  background: var(--primary);
+  color: var(--primary-fg);
+}
+.m-ign:hover {
+  color: var(--danger);
+  background: var(--hover);
+}
+/* Chunks: conflicts are red, one-sided changes blue, identical changes grey; once resolved they fade. */
+.m-row.ch {
+  margin: 1px 0;
+}
+.m-row.k-conflict > .m-side:not(.plain),
+.m-row.k-conflict > .m-res {
+  background: var(--m-conflict);
+}
+.m-row.k-ours > .m-side:not(.plain),
+.m-row.k-theirs > .m-side:not(.plain),
+.m-row.k-ours > .m-res,
+.m-row.k-theirs > .m-res {
+  background: var(--m-change);
+}
+.m-row.k-same > .m-side,
+.m-row.k-same > .m-res {
+  background: var(--m-same);
+}
+.m-row.k-conflict > .s-pending {
+  box-shadow: inset 2px 0 var(--c-conflict);
+}
+.m-row.k-ours > .s-pending,
+.m-row.k-theirs > .s-pending {
+  box-shadow: inset 2px 0 var(--c-modified);
+}
+.m-row.resolved > .m-side:not(.plain),
+.m-row.resolved > .m-res {
+  background: var(--m-same);
+}
+.m-row > .s-ignored .tx {
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--muted-fg) 60%, transparent);
+  color: var(--muted-fg);
+}
+.m-row.current > .m-res {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ring) 70%, transparent);
+}
+@media (max-width: 700px) {
+  .m-heads,
+  .m-row {
+    grid-template-columns: minmax(0, 1fr) 34px minmax(0, 1fr) 34px minmax(0, 1fr);
+  }
+  .ml .no {
+    width: 26px;
+    padding-right: 4px;
+  }
+  .m-res {
+    padding: 0 4px;
+  }
+  .m-path {
+    display: none;
   }
 }

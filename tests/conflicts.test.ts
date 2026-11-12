@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { conflictInfo, readConflict, writeResolved, resolveSide, conflictType } from '../worker/conflicts.mjs'
+import { conflictInfo, readConflict, writeResolved, resolveSide, conflictType, operationInProgress } from '../worker/conflicts.mjs'
 
 const dirs: string[] = []
 after(() => {
@@ -174,4 +174,16 @@ test('conflictInfo with no operation names the stash', async () => {
   assert.equal(info.oursLabel, 'Current branch')
   assert.equal(info.theirsLabel, 'Stash')
   assert.equal(info.files.length, 1)
+})
+
+test('rebase state ends when the rebase finishes, though git keeps REBASE_HEAD', async () => {
+  const r = repo({ base: { 'f.txt': 'a\nb\nc\n' }, main: { 'f.txt': 'a\nM\nc\n' }, feature: { 'f.txt': 'a\nF\nc\n' } })
+  r.git('checkout', '-q', 'feature')
+  try {
+    r.git('rebase', 'main')
+  } catch {}
+  assert.equal(await operationInProgress(r.dir), 'rebase')
+  await resolveSide(r.dir, ['f.txt'], 'theirs')
+  r.git('-c', 'core.editor=true', 'rebase', '--continue')
+  assert.equal(await operationInProgress(r.dir), null)
 })

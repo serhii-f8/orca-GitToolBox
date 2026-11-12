@@ -1,6 +1,7 @@
 // Git Toolbox panel: branch tree, commit graph log, commit details and local changes.
 // Every git call goes to the plugin's worker through orca.plugin.request.
 import { createGraph } from './graph.js'
+import { createConflictUI } from './mergeview.js'
 
 /* global orca */
 const $ = (sel, root = document) => root.querySelector(sel)
@@ -31,6 +32,8 @@ const ICONS = {
   head: '<circle cx="8" cy="8" r="3"/><circle cx="8" cy="8" r="6"/>',
   close: '<path d="m4 4 8 8M12 4l-8 8"/>',
   chevronDown: '<path d="m4 6 4 4 4-4"/>',
+  chevronUp: '<path d="m4 10 4-4 4 4"/>',
+  merge: '<circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/><circle cx="11.5" cy="8" r="1.5"/><path d="M4.5 5v6M4.5 5c0 3 4 3 5.5 3"/>',
   open: '<path d="M9 3h4v4"/><path d="M13 3 7.5 8.5"/><path d="M11 9.5V13H3V5h3.5"/>',
   check: '<path d="m3.5 8.5 3 3 6-7"/>'
 }
@@ -84,7 +87,12 @@ const state = {
   follow: true,
   lastPickedId: /** @type {string | null} */ (null),
   pickSeq: 0,
-  sig: { log: '', branches: '', status: '' }
+  sig: { log: '', branches: '', status: '' },
+  // Conflicts seen in the last status (null before the first one for this repository), and the
+  // stash bookkeeping: conflicts with no operation come from a stash pop, which keeps the stash.
+  conflictCount: /** @type {number | null} */ (null),
+  stashConflict: false,
+  stashKept: false
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -147,6 +155,20 @@ const opLabel = (op) =>
     reset: 'Reset',
     commit: 'Commit'
   })[op] ?? op
+
+// Wrapped: some of these are consts defined further down.
+const conflictsUI = createConflictUI({
+  req: (...a) => req(...a),
+  tryAct: (...a) => tryAct(...a),
+  ask: (o) => ask(o),
+  toast: (...a) => toast(...a),
+  toastError: (t, e) => toastError(t, e),
+  esc: (x) => esc(x),
+  icon: (n) => icon(n),
+  repo: () => state.repo,
+  // A refresh already in flight may have read the status before the change: read it once more.
+  afterChange: () => void refreshAll().then(() => loadStatus()).catch(() => undefined)
+})
 
 const lastLines = (text, n = 6) =>
   (text ?? '')
@@ -384,7 +406,7 @@ async function loadWorkspaces() {
 
   let next = state.repo
   const focused = state.workspaces.find((w) => w.id === state.focusedId && w.git)
-  if (focusMoved && focused && state.follow && pickSeq === state.pickSeq) next = focused.path
+  if (focusMoved && focused && state.follow && pickSeq === state.pickSeq && !conflictsUI.mergeOpen) next = focused.path
   if (!next) {
     // First load: the workspace Orca shows, else the one picked last time, else any repository.
     const last = state.workspaces.find((w) => w.id === state.lastPickedId && w.git)
@@ -415,6 +437,10 @@ async function setRepo(path) {
   state.branchSel = null
   state.changeSel = null
   state.branches = null
+  state.conflictCount = null
+  state.stashConflict = false
+  state.stashKept = false
+  conflictsUI.closeDialog()
   renderSwitcherButton()
   renderDetailsEmpty()
   $('#changesDiff').innerHTML = '<div class="empty"><strong>No file selected</strong>Pick a file to see its diff.</div>'
@@ -1185,7 +1211,18 @@ async function loadStatus() {
   state.sig.status = sig
   const n = status.files.length
   $('#changesCount').textContent = n ? String(n) : ''
+  const conflicts = status.files.filter((f) => f.kind === 'conflict').length
+  const before = state.conflictCount
+  state.conflictCount = conflicts
+  if (conflicts && !status.inProgress) state.stashConflict = true
+  else if (!conflicts && state.stashConflict) {
+    state.stashConflict = false
+    state.stashKept = !status.inProgress
+  }
   renderBanner()
+  // An operation just stopped on conflicts: show them, like the other dialogs that follow an action.
+  if (before === 0 && conflicts > 0 && !conflictsUI.dialogOpen && !conflictsUI.mergeOpen) void conflictsUI.openDialog()
+  else void conflictsUI.refreshDialog()
   const list = $('#changesList')
   const scroll = list.scrollTop
   renderChanges()
@@ -1204,18 +1241,55 @@ async function loadStatus() {
 function renderBanner() {
   const st = state.status
   const banner = $('#banner')
-  if (st?.inProgress) {
-    const conflicts = st.files.filter((f) => f.kind === 'conflict').length
-    const label = { merge: 'Merge', rebase: 'Rebase', 'cherry-pick': 'Cherry-pick', revert: 'Revert' }[st.inProgress]
-    banner.innerHTML = `<span>${esc(label)} in progress${conflicts ? ` with ${conflicts} conflict${conflicts === 1 ? '' : 's'}` : ''}. Resolve the files in Changes and commit, or abort.</span><button class="secondary" data-abort>Abort ${esc(label.toLowerCase())}</button>`
-    banner.classList.remove('hidden')
-    $('[data-abort]', banner).onclick = async () => {
-      const ok = await ask({ title: `Abort ${label.toLowerCase()}?`, message: 'Changes made by this operation will be discarded.', ok: 'Abort', danger: true })
-      if (ok) await tryAct('abort', { what: st.inProgress }, { success: `${label} aborted` })
-    }
-  } else {
+  const op = st?.inProgress ?? null
+  const conflicts = st?.files.filter((f) => f.kind === 'conflict').length ?? 0
+  const label = op ? { merge: 'Merge', rebase: 'Rebase', 'cherry-pick': 'Cherry-pick', revert: 'Revert' }[op] : ''
+  /** @type {[string, string, string][]} action, text, class */
+  const buttons = []
+  let text = ''
+  if (conflicts) {
+    const n = `${conflicts} conflict${conflicts === 1 ? '' : 's'}`
+    text = op ? `${label} in progress with ${n}.` : `${n} to resolve.`
+    buttons.push(['resolve', 'Resolve conflicts…', 'primary'])
+  } else if (op === 'merge') {
+    text = 'Merge in progress: all conflicts are resolved.'
+    buttons.push(['commitMerge', 'Commit merge', 'primary'])
+  } else if (op) {
+    text = `${label} paused: nothing is in conflict.`
+    buttons.push(['continue', `Continue ${op}`, 'primary'], ['skip', 'Skip this commit', 'secondary'])
+  } else if (state.stashKept) {
+    text = 'Conflicts resolved. The stash was kept.'
+    buttons.push(['dropStash', 'Drop stash', 'secondary'], ['dismiss', 'Dismiss', 'secondary'])
+  }
+  if (op) buttons.push(['abort', `Abort ${label.toLowerCase()}`, 'secondary'])
+  if (!text) {
     banner.classList.add('hidden')
     banner.innerHTML = ''
+    return
+  }
+  banner.innerHTML = `<span>${esc(text)}</span><span class="acts">${buttons
+    .map(([a, t, c]) => `<button class="${c}" data-banner="${a}">${esc(t)}</button>`)
+    .join('')}</span>`
+  banner.classList.remove('hidden')
+  banner.onclick = async (e) => {
+    const b = /** @type {HTMLElement} */ (e.target).closest('[data-banner]')
+    if (!(b instanceof HTMLElement)) return
+    const a = b.dataset.banner
+    if (a === 'resolve') void conflictsUI.openDialog()
+    else if (a === 'commitMerge' || a === 'continue' || a === 'skip') void conflictsUI.finish(a, op)
+    else if (a === 'dismiss') {
+      state.stashKept = false
+      renderBanner()
+    } else if (a === 'dropStash') {
+      const ok = await ask({ title: 'Drop the stash?', message: 'The newest stash entry will be deleted. Its changes are already in your files.', ok: 'Drop', danger: true })
+      if (ok && (await tryAct('stashDrop', {}, { success: 'Stash dropped' }))) {
+        state.stashKept = false
+        renderBanner()
+      }
+    } else if (a === 'abort') {
+      const ok = await ask({ title: `Abort ${label.toLowerCase()}?`, message: 'Changes made by this operation will be discarded.', ok: 'Abort', danger: true })
+      if (ok) await tryAct('abort', { what: op }, { success: `${label} aborted` })
+    }
   }
 }
 
@@ -1255,7 +1329,7 @@ function renderChanges() {
       'Merge Conflicts',
       g.conflicts,
       '',
-      (i) => btn('plus', 'Mark as resolved (stage)', `data-a="stage" data-i="${i}"`)
+      (i) => btn('merge', 'Merge…', `data-a="merge" data-i="${i}"`) + btn('plus', 'Mark as resolved (stage)', `data-a="stage" data-i="${i}"`)
     ) +
     section(
       'staged',
@@ -1308,7 +1382,8 @@ async function onChangesClick(e) {
     const a = b.dataset.a
     const f = b.dataset.i !== undefined ? changeRows[Number(b.dataset.i)] : null
     const g = changeGroups()
-    if (a === 'stage' && f) await tryAct('stage', { paths: [f.path] }, { quiet: true })
+    if (a === 'merge' && f) await conflictsUI.openMerge(f.path)
+    else if (a === 'stage' && f) await tryAct('stage', { paths: [f.path] }, { quiet: true })
     else if (a === 'unstage' && f) await tryAct('unstage', { paths: f.oldPath ? [f.path, f.oldPath] : [f.path] }, { quiet: true })
     else if (a === 'unstageAll') await tryAct('unstageAll', {}, { quiet: true })
     else if (a === 'stageGroup') {
@@ -1671,6 +1746,7 @@ function closeSwitcher() {
 async function pickWorkspace(w, { openInOrca = false } = {}) {
   if (!w?.git) return
   closeSwitcher()
+  if (w.path !== state.repo && !(await conflictsUI.closeMerge())) return
   // A pick wins over any workspace read already in flight, and breaks later ties toward it.
   state.pickSeq++
   wsSeq++
@@ -1923,6 +1999,23 @@ function wire() {
   })
 
   $('#changesList').addEventListener('click', (e) => void onChangesClick(e))
+  $('#changesList').addEventListener('dblclick', (e) => {
+    const row = /** @type {HTMLElement} */ (e.target).closest('.file')
+    const f = row instanceof HTMLElement ? changeRows[Number(row.dataset.i)] : null
+    if (f?.group === 'conflicts') void conflictsUI.openMerge(f.path)
+  })
+  $('#changesList').addEventListener('contextmenu', (e) => {
+    const row = /** @type {HTMLElement} */ (e.target).closest('.file')
+    const f = row instanceof HTMLElement ? changeRows[Number(row.dataset.i)] : null
+    if (f?.group !== 'conflicts') return
+    showMenu(e, [
+      { label: 'Merge…', run: () => void conflictsUI.openMerge(f.path) },
+      { label: 'Accept Yours', run: () => void tryAct('resolveSide', { paths: [f.path], side: 'ours' }, { quiet: true }) },
+      { label: 'Accept Theirs', run: () => void tryAct('resolveSide', { paths: [f.path], side: 'theirs' }, { quiet: true }) },
+      '-',
+      { label: 'Show all conflicts…', run: () => void conflictsUI.openDialog() }
+    ])
+  })
   $('#commitBtn').addEventListener('click', () => void commit(false))
   $('#commitPushBtn').addEventListener('click', () => void commit(true))
   $('#amend').addEventListener('change', () => void onAmendToggle())
@@ -1936,8 +2029,22 @@ function wire() {
 }
 
 /** Palette commands: switch tab, open the switcher, optionally select the first item. */
-async function showView({ tab, switcher, select }) {
+async function showView({ tab, switcher, select, merge, conflicts, repo }) {
+  // `repo` shows that workspace's Git without moving Orca (used for screenshots and scripts).
+  if (typeof repo === 'string' && repo !== state.repo) {
+    if (!state.workspaces.length) await loadWorkspaces()
+    const w = state.workspaces.find((x) => x.path === repo)
+    if (w) await pickWorkspace(w)
+  }
   if (tab === 'log' || tab === 'changes') setTab(tab)
+  if (typeof merge === 'string' && merge) {
+    await conflictsUI.openMerge(merge)
+    return
+  }
+  if (conflicts) {
+    await conflictsUI.openDialog()
+    return
+  }
   if (switcher) {
     if (!switcherOpen()) openSwitcher()
     return
