@@ -204,7 +204,11 @@ export function createConflictUI(d) {
       d.toast(what === 'skip' ? 'Commit skipped' : `${opTitle(op)} continued`)
     } catch (err) {
       const msg = String(err?.message ?? err)
-      if (/nothing to commit|now empty|is empty|allow-empty/i.test(msg))
+      // A rebase or cherry-pick of several commits stops again at the next conflict: that is
+      // progress, not a failure.
+      const now = await d.req('git.conflicts').catch(() => null)
+      if (now?.op && now.files.length) d.toast('Stopped at the next conflict', `${now.files.length} file${now.files.length === 1 ? '' : 's'} to resolve`)
+      else if (/nothing to commit|now empty|is empty|allow-empty/i.test(msg))
         d.toast('Nothing left to commit', 'The resolved commit has no changes. Use "Skip this commit" to drop it.', { error: true })
       else d.toastError(`${opTitle(op)} could not continue`, err)
     }
@@ -306,7 +310,10 @@ export function createConflictUI(d) {
     const m = view.m
     const r = m.regions[i]
     const s = m.state[i]
-    const res = chunkText(m, i).map(stripEol).join('\n')
+    // A cell shows its lines plus one sentinel "\n", so a last blank line still has a newline after it
+    // (the browser drops a single trailing one); onMergeInput strips exactly that sentinel.
+    const shown = chunkText(m, i).map(stripEol)
+    const res = shown.length ? shown.join('\n') + '\n' : ''
     if (r.type === 'equal') {
       return `<div class="m-row eq" data-i="${i}">
         <div class="m-side">${sideLines(r.lines, startLine(i, 'ours'))}</div><div class="m-gut"></div>
@@ -382,7 +389,7 @@ export function createConflictUI(d) {
     if (!(cell instanceof HTMLElement)) return
     const i = Number(cell.dataset.i)
     const m = view.m
-    const text = cell.innerText.replace(/\n$/, '')
+    const text = cell.innerText.endsWith('\n') ? cell.innerText.slice(0, -1) : cell.innerText
     const last = i === m.regions.length - 1
     const prev = chunkText(m, i)
     const endsWithEol = !last || !prev.length || /\n$/.test(prev[prev.length - 1])
@@ -427,6 +434,24 @@ export function createConflictUI(d) {
 
   async function apply() {
     const c = counts(view.m)
+    if (c.changes) {
+      // Changes made on one side only were merged cleanly by git; dropping them must be a choice.
+      const res = await d.ask({
+        title: `${c.changes} change${c.changes === 1 ? ' was' : 's were'} not applied`,
+        message: 'These were made on only one side and do not conflict.',
+        choices: [
+          { value: 'include', label: 'Apply them too', hint: 'Recommended' },
+          { value: 'leave', label: 'Leave them out', hint: 'Those parts keep the base text' }
+        ],
+        ok: 'Continue'
+      })
+      if (!res) return
+      if (res.choice === 'include') {
+        applyNonConflicting(view.m)
+        $('#mergeView .m-body').innerHTML = view.m.regions.map((_, i) => rowHtml(i)).join('')
+        updateCount()
+      }
+    }
     const content = resultText(view.m)
     if (c.conflicts) {
       const ok = await d.ask({

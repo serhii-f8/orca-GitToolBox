@@ -87,8 +87,9 @@ export async function conflictInfo(repo) {
       const code = f.index + f.worktree
       return { path: f.path, code, type: conflictType(code) }
     })
-  let oursLabel = 'Current branch'
-  let theirsLabel = 'Stash'
+  // No operation: a stash pop, a squash merge or an applied patch. Git does not say which.
+  let oursLabel = 'Your files'
+  let theirsLabel = 'Incoming changes'
   if (op === 'merge') {
     oursLabel = await currentBranch(repo)
     theirsLabel = await refName(repo, 'MERGE_HEAD')

@@ -160,7 +160,7 @@ test('current is null when the file was removed from disk', async () => {
   assert.equal((await readConflict(r.dir, 'f.txt')).current, null)
 })
 
-test('conflictInfo with no operation names the stash', async () => {
+test('conflictInfo with no operation uses neutral side names', async () => {
   const r = repo({ base: { 'f.txt': 'a\nb\nc\n' }, main: { 'f.txt': 'a\nM\nc\n' }, feature: {} })
   writeFileSync(join(r.dir, 'f.txt'), 'a\nS\nc\n')
   r.git('stash', '-q')
@@ -171,8 +171,8 @@ test('conflictInfo with no operation names the stash', async () => {
   } catch {}
   const info = await conflictInfo(r.dir)
   assert.equal(info.op, null)
-  assert.equal(info.oursLabel, 'Current branch')
-  assert.equal(info.theirsLabel, 'Stash')
+  assert.equal(info.oursLabel, 'Your files')
+  assert.equal(info.theirsLabel, 'Incoming changes')
   assert.equal(info.files.length, 1)
 })
 

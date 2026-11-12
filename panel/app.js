@@ -92,7 +92,10 @@ const state = {
   // stash bookkeeping: conflicts with no operation come from a stash pop, which keeps the stash.
   conflictCount: /** @type {number | null} */ (null),
   stashConflict: false,
-  stashKept: false
+  stashKept: false,
+  // The last git operation run from the panel or a palette command, to tell a stash pop's
+  // conflicts from other conflicts that have no operation in progress.
+  lastOp: ''
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -118,6 +121,7 @@ function updateBusy() {
 /** Runs a git action, reports the result and refreshes. Resolves to true on success. */
 async function act(op, args = {}, { success, quiet = false, timeoutMs = 120_000, refresh = true } = {}) {
   state.acting = true
+  state.lastOp = op
   try {
     const res = await req('git.action', { op, ...args }, timeoutMs)
     if (!quiet) toast(success ?? `${op} done`, lastLines(res?.output))
@@ -440,6 +444,7 @@ async function setRepo(path) {
   state.conflictCount = null
   state.stashConflict = false
   state.stashKept = false
+  state.lastOp = ''
   conflictsUI.closeDialog()
   renderSwitcherButton()
   renderDetailsEmpty()
@@ -1214,7 +1219,8 @@ async function loadStatus() {
   const conflicts = status.files.filter((f) => f.kind === 'conflict').length
   const before = state.conflictCount
   state.conflictCount = conflicts
-  if (conflicts && !status.inProgress) state.stashConflict = true
+  // pull --rebase --autostash and stash pop leave the stash in place when applying it conflicts.
+  if (conflicts && !status.inProgress && (state.lastOp === 'pull' || state.lastOp === 'stashPop')) state.stashConflict = true
   else if (!conflicts && state.stashConflict) {
     state.stashConflict = false
     state.stashKept = !status.inProgress
@@ -1281,7 +1287,12 @@ function renderBanner() {
       state.stashKept = false
       renderBanner()
     } else if (a === 'dropStash') {
-      const ok = await ask({ title: 'Drop the stash?', message: 'The newest stash entry will be deleted. Its changes are already in your files.', ok: 'Drop', danger: true })
+      const ok = await ask({
+        title: 'Drop the newest stash entry?',
+        message: 'Git kept stash@{0} because applying it hit conflicts. Check that its changes are in your files before dropping it.',
+        ok: 'Drop',
+        danger: true
+      })
       if (ok && (await tryAct('stashDrop', {}, { success: 'Stash dropped' }))) {
         state.stashKept = false
         renderBanner()
@@ -2081,6 +2092,7 @@ async function init() {
 
   orca.plugin.on('repo.changed', (payload) => {
     if (!payload || payload.repo !== state.repo || state.acting) return
+    if (payload.reason) state.lastOp = payload.reason
     clearTimeout(changedTimer)
     changedTimer = setTimeout(() => void refreshAll(), 300)
   })
