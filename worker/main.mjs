@@ -15,6 +15,7 @@ import {
   parseStatus,
   runGit
 } from './git.mjs'
+import { conflictInfo, operationInProgress, readConflict, resolveSide, writeResolved } from './conflicts.mjs'
 
 const MAX_DIFF_BYTES = 768 * 1024
 const NETWORK_TIMEOUT = 180_000
@@ -281,19 +282,10 @@ async function diff(repo, q) {
 }
 
 async function status(repo) {
-  const verify = (ref) =>
-    runGit(repo, ['rev-parse', '-q', '--verify', ref], { okExitCodes: [0, 1, 128] }).then(
-      (o) => o.trim().length > 0,
-      () => false
-    )
-  const [out, merge, rebase, cherryPick, revert] = await Promise.all([
+  const [out, inProgress] = await Promise.all([
     runGit(repo, ['status', '--porcelain=v2', '--branch', '-z', '--untracked-files=all']),
-    verify('MERGE_HEAD'),
-    verify('REBASE_HEAD'),
-    verify('CHERRY_PICK_HEAD'),
-    verify('REVERT_HEAD')
+    operationInProgress(repo)
   ])
-  const inProgress = merge ? 'merge' : rebase ? 'rebase' : cherryPick ? 'cherry-pick' : revert ? 'revert' : null
   return { ...parseStatus(out), inProgress }
 }
 
@@ -439,6 +431,21 @@ async function action(orca, repo, a) {
       return runGit(repo, ['stash', 'push', '--include-untracked', ...(a.message ? ['-m', String(a.message)] : [])])
     case 'stashPop':
       return runGit(repo, ['stash', 'pop'])
+    case 'stashDrop':
+      return runGit(repo, ['stash', 'drop'])
+    case 'resolveSide':
+      return resolveSide(repo, a.paths ?? [], a.side)
+    case 'writeResolved':
+      return writeResolved(repo, String(a.path ?? ''), a.content)
+    case 'commitMerge':
+      return runGit(repo, ['commit', '--no-edit'])
+    case 'continue':
+    case 'skip': {
+      const what = a.what
+      if (!['rebase', 'cherry-pick', 'revert'].includes(what)) throw new GitError(`Nothing to ${op}`)
+      // core.editor=true accepts git's prepared message instead of opening an editor.
+      return runGit(repo, ['-c', 'core.editor=true', what, `--${op}`])
+    }
     default:
       throw new GitError(`Unknown action: ${op}`)
   }
@@ -603,6 +610,8 @@ export default async function activate(orca) {
   orca.panels.handle('git.details', safe((i) => commitDetails(repoOf(i), i.hash)))
   orca.panels.handle('git.diff', safe((i) => diff(repoOf(i), i)))
   orca.panels.handle('git.status', safe((i) => status(repoOf(i))))
+  orca.panels.handle('git.conflicts', safe((i) => conflictInfo(repoOf(i))))
+  orca.panels.handle('git.conflict', safe((i) => readConflict(repoOf(i), i.path)))
   orca.panels.handle(
     'git.action',
     safe(async (i, ctx) => {
@@ -626,7 +635,10 @@ export default async function activate(orca) {
       orca.panels.post('repo.changed', { repo: tracker.repo, reason: op })
       return (typeof out === 'string' && out.trim().split('\n').slice(-3).join('\n')) || `${op} done`
     } catch (err) {
-      return `${op} failed: ${err?.message ?? err}`
+      orca.panels.post('repo.changed', { repo: tracker.repo, reason: op })
+      const conflicts = await conflictInfo(tracker.repo).then((c) => c.files.length, () => 0)
+      const hint = conflicts ? ` (${conflicts} conflict${conflicts === 1 ? '' : 's'}: open the Git panel to resolve them)` : ''
+      return `${op} failed: ${err?.message ?? err}${hint}`
     }
   }
   // Views of the open Git panel, for the palette and shortcuts. `select: 'first'` also selects the

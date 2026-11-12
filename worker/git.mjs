@@ -57,11 +57,12 @@ export class GitError extends Error {
  * Runs git and resolves with stdout.
  * @param {string} repo
  * @param {string[]} args
- * @param {{ input?: string; timeoutMs?: number; okExitCodes?: number[]; maxBytes?: number }} [opts]
- * @returns {Promise<string>}
+ * @param {{ input?: string; timeoutMs?: number; okExitCodes?: number[]; maxBytes?: number; buffer?: boolean }} [opts]
+ *   `buffer` resolves with the raw stdout bytes instead of a UTF-8 string.
+ * @returns {Promise<any>}
  */
 export function runGit(repo, args, opts = {}) {
-  const { input, timeoutMs = 60_000, okExitCodes = [0], maxBytes = 64 * 1024 * 1024 } = opts
+  const { input, timeoutMs = 60_000, okExitCodes = [0], maxBytes = 64 * 1024 * 1024, buffer = false } = opts
   const cmd = buildCommand(repo, args)
   return new Promise((resolve, reject) => {
     let child
@@ -104,10 +105,11 @@ export function runGit(repo, args, opts = {}) {
     })
     child.on('close', (code) => {
       clearTimeout(timer)
-      const stdout = Buffer.concat(out).toString('utf8')
+      const raw = Buffer.concat(out)
+      const stdout = raw.toString('utf8')
       const stderr = Buffer.concat(errOut).toString('utf8').trim()
       if (truncated || okExitCodes.includes(code ?? -1)) {
-        resolve(stdout)
+        resolve(buffer ? raw : stdout)
       } else {
         const msg = stderr || stdout.trim() || `git ${args[0]} exited with code ${code}`
         reject(new GitError(msg, { stderr, exitCode: code }))
