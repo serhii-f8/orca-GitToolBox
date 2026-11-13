@@ -962,7 +962,7 @@ function appendRows(start) {
     const c = state.commits[i]
     const row = state.rowLayout[i]
     maxLanes = Math.max(maxLanes, row.width)
-    const cls = ['row', c.parents.length > 1 ? 'merge' : '', c.hash === state.selected ? 'selected' : ''].filter(Boolean).join(' ')
+    const cls = ['row', c.parents.length > 1 ? 'merge-commit' : '', c.hash === state.selected ? 'selected' : ''].filter(Boolean).join(' ')
     html.push(
       `<div class="${cls}" data-i="${i}" style="--lane:${laneColor(row.color)}"><div class="graph">${graphSvg(row, c, c.hash === headSha)}</div><div class="subject">${refBadges(c.refs, row.color)}<span class="text" title="${esc(c.subject)}">${esc(c.subject)}</span></div><div class="author" title="${esc(c.author)} <${esc(c.email)}>">${esc(c.author)}</div><div class="date" title="${esc(new Date(c.time).toLocaleString())}">${esc(shortDate(c.time))}</div></div>`
     )

@@ -782,8 +782,8 @@ select optgroup {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.row.merge .subject .text,
-.row.merge .author {
+.row.merge-commit .subject .text,
+.row.merge-commit .author {
   color: var(--muted-fg);
 }
 .row .author {
