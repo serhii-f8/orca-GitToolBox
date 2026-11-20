@@ -12,7 +12,7 @@ export function splitLines(text) {
 }
 
 /**
- * Myers O(ND) line diff. Returns the changed ranges as half-open hunks.
+ * Myers O(ND) line diff in linear space. Returns the changed ranges as half-open hunks.
  * @param {string[]} a
  * @param {string[]} b
  * @returns {{ aStart: number; aEnd: number; bStart: number; bEnd: number }[]}
@@ -38,50 +38,109 @@ export function diffLines(a, b) {
   return hunks
 }
 
-/** @param {string[]} a @param {string[]} b @returns {[number, number][]} matched index pairs, in order */
-function myersMatches(a, b) {
-  const n = a.length
-  const m = b.length
-  if (!n || !m) return []
-  const max = n + m
-  const off = max + 1
-  const v = new Int32Array(2 * max + 3)
-  /** @type {Int32Array[]} */
-  const trace = []
-  let end = -1
-  for (let d = 0; d <= max && end < 0; d++) {
-    trace.push(v.slice(off - d, off + d + 1))
-    for (let k = -d; k <= d; k += 2) {
-      let x = k === -d || (k !== d && v[off + k - 1] < v[off + k + 1]) ? v[off + k + 1] : v[off + k - 1] + 1
-      let y = x - k
-      while (x < n && y < m && a[x] === b[y]) {
-        x++
-        y++
-      }
-      v[off + k] = x
-      if (x >= n && y >= m) {
-        end = d
-        break
-      }
-    }
-  }
+/** Diagonal steps the diff may take before it gives up on finer matches and reports a range as changed. */
+export const DIFF_BUDGET = 30_000_000
+
+/**
+ * Matched index pairs, in order. Bisects on the middle of the edit path (as diff-match-patch does), so
+ * memory is O(N+M) rather than the O(D²) of keeping a trace: a file whose every line changed (CRLF against
+ * LF) no longer needs gigabytes.
+ * @param {string[]} a @param {string[]} b @param {number} [budget]
+ * @returns {[number, number][]}
+ */
+export function myersMatches(a, b, budget = DIFF_BUDGET) {
+  if (!a.length || !b.length) return []
+  // Lines as small integers: comparisons get cheap, and no common line at all is spotted up front.
+  /** @type {Map<string, number>} */
+  const ids = new Map()
+  const A = Int32Array.from(a, (l) => ids.get(l) ?? (ids.set(l, ids.size), ids.size - 1))
+  const known = ids.size
+  const B = Int32Array.from(b, (l) => ids.get(l) ?? (ids.set(l, ids.size), ids.size - 1))
+  if (!B.some((id) => id < known)) return []
   /** @type {[number, number][]} */
   const out = []
-  let x = n
-  let y = m
-  for (let d = end; d > 0; d--) {
-    const V = trace[d]
-    const at = (k) => V[k + d]
-    const k = x - y
-    const prevK = k === -d || (k !== d && at(k - 1) < at(k + 1)) ? k + 1 : k - 1
-    const prevX = at(prevK)
-    const prevY = prevX - prevK
-    while (x > prevX && y > prevY) out.push([--x, --y])
-    x = prevX
-    y = prevY
+  let steps = 0
+
+  /** @param {number} aLo @param {number} aHi @param {number} bLo @param {number} bHi */
+  const solve = (aLo, aHi, bLo, bHi) => {
+    while (aLo < aHi && bLo < bHi && A[aLo] === B[bLo]) out.push([aLo++, bLo++])
+    let tail = 0
+    while (aLo < aHi - tail && bLo < bHi - tail && A[aHi - 1 - tail] === B[bHi - 1 - tail]) tail++
+    const split = aLo < aHi - tail && bLo < bHi - tail && steps < budget ? bisect(aLo, aHi - tail, bLo, bHi - tail) : null
+    if (split) {
+      solve(aLo, split[0], bLo, split[1])
+      solve(split[0], aHi - tail, split[1], bHi - tail)
+    }
+    for (let i = tail; i > 0; i--) out.push([aHi - i, bHi - i])
   }
-  while (x > 0 && y > 0) out.push([--x, --y])
-  return out.reverse()
+
+  /**
+   * The point where the forward and backward searches meet, or null when nothing in the range matches.
+   * @param {number} aLo @param {number} aHi @param {number} bLo @param {number} bHi
+   * @returns {[number, number] | null}
+   */
+  const bisect = (aLo, aHi, bLo, bHi) => {
+    const n = aHi - aLo
+    const m = bHi - bLo
+    const maxD = Math.ceil((n + m) / 2)
+    const off = maxD
+    const len = 2 * maxD + 2
+    const v1 = new Int32Array(len).fill(-1)
+    const v2 = new Int32Array(len).fill(-1)
+    v1[off + 1] = 0
+    v2[off + 1] = 0
+    const delta = n - m
+    const front = delta % 2 !== 0
+    let k1start = 0
+    let k1end = 0
+    let k2start = 0
+    let k2end = 0
+    for (let d = 0; d < maxD; d++) {
+      if (steps > budget) return null
+      for (let k1 = -d + k1start; k1 <= d - k1end; k1 += 2) {
+        steps++
+        const i = off + k1
+        let x1 = k1 === -d || (k1 !== d && v1[i - 1] < v1[i + 1]) ? v1[i + 1] : v1[i - 1] + 1
+        let y1 = x1 - k1
+        while (x1 < n && y1 < m && A[aLo + x1] === B[bLo + y1]) {
+          x1++
+          y1++
+        }
+        v1[i] = x1
+        if (x1 > n) k1end += 2
+        else if (y1 > m) k1start += 2
+        else if (front) {
+          const j = off + delta - k1
+          if (j >= 0 && j < len && v2[j] !== -1 && x1 >= n - v2[j]) return [aLo + x1, bLo + y1]
+        }
+      }
+      for (let k2 = -d + k2start; k2 <= d - k2end; k2 += 2) {
+        steps++
+        const i = off + k2
+        let x2 = k2 === -d || (k2 !== d && v2[i - 1] < v2[i + 1]) ? v2[i + 1] : v2[i - 1] + 1
+        let y2 = x2 - k2
+        while (x2 < n && y2 < m && A[aHi - 1 - x2] === B[bHi - 1 - y2]) {
+          x2++
+          y2++
+        }
+        v2[i] = x2
+        if (x2 > n) k2end += 2
+        else if (y2 > m) k2start += 2
+        else if (!front) {
+          const j = off + delta - k2
+          if (j >= 0 && j < len && v1[j] !== -1) {
+            const x1 = v1[j]
+            const y1 = off + x1 - j
+            if (x1 >= n - x2) return [aLo + x1, bLo + y1]
+          }
+        }
+      }
+    }
+    return null
+  }
+
+  solve(0, A.length, 0, B.length)
+  return out
 }
 
 /**
@@ -197,7 +256,15 @@ export function chunkText(m, i) {
   const s = m.state[i]
   if (s.manual) return s.manual
   if (r.type === 'equal') return r.lines
-  return s.order.length ? s.order.flatMap((side) => r[side]) : r.base
+  if (!s.order.length) return r.base
+  // Taking both sides: a side that ends without a newline (the file's last line) would run into the next.
+  return s.order.flatMap((side, k) => {
+    const lines = r[side]
+    const last = lines.at(-1)
+    if (k === s.order.length - 1 || last === undefined || last.endsWith('\n')) return lines
+    const eol = [lines, ...m.regions.map((x) => (x.type === 'equal' ? x.lines : x.base))].some((ls) => ls.some((l) => l.endsWith('\r\n'))) ? '\r\n' : '\n'
+    return [...lines.slice(0, -1), last + eol]
+  })
 }
 
 /** @param {Merge} m @param {number} i */
@@ -225,5 +292,7 @@ export function resultText(m) {
 
 /** True when text still has a git conflict marker at the start of a line. @param {string} text */
 export function hasConflictMarkers(text) {
-  return /^(?:<{7}|>{7})(?: |\r?$)|^={7}\r?$/m.test(text)
+  // "=======" alone is a Markdown heading underline, so only the opening and closing markers count. Either
+  // one is enough: a conflict whose other half was deleted by hand is still unfinished.
+  return /^(?:<{7}|>{7})(?: |\r?$)/m.test(text)
 }

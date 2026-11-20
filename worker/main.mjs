@@ -13,7 +13,8 @@ import {
   parseNameStatus,
   parseRefs,
   parseStatus,
-  runGit
+  runGit,
+  splitRemoteName
 } from './git.mjs'
 import { conflictInfo, operationInProgress, readConflict, resolveSide, writeResolved } from './conflicts.mjs'
 
@@ -172,17 +173,15 @@ export function matchFocused(workspaces, context, prefer = null) {
 // Read operations
 
 async function branches(repo) {
-  const [refsOut, headOut] = await Promise.all([
+  const [refsOut, headOut, remotesOut] = await Promise.all([
     runGit(repo, ['for-each-ref', `--format=${REF_FORMAT}`, 'refs/heads', 'refs/remotes', 'refs/tags']),
-    runGit(repo, ['rev-parse', 'HEAD', '--abbrev-ref', 'HEAD'], { okExitCodes: [0, 128] })
+    runGit(repo, ['rev-parse', 'HEAD', '--abbrev-ref', 'HEAD'], { okExitCodes: [0, 128] }),
+    runGit(repo, ['remote']).catch(() => null)
   ])
-  const refs = parseRefs(refsOut)
+  const known = remotesOut === null ? [] : remotesOut.split('\n').filter(Boolean)
+  const refs = parseRefs(refsOut, known)
   const [sha, abbrev] = headOut.trim().split('\n')
-  const remoteNames = [...new Set(refs.remotes.map((r) => r.remote))]
-  let remotesList = remoteNames
-  try {
-    remotesList = (await runGit(repo, ['remote'])).split('\n').filter(Boolean)
-  } catch {}
+  const remotesList = remotesOut === null ? [...new Set(refs.remotes.map((r) => r.remote))] : known
   return {
     head: {
       branch: abbrev && abbrev !== 'HEAD' ? abbrev : null,
@@ -203,25 +202,24 @@ async function log(repo, q) {
   const args = ['log', '--date-order', '--decorate=full', `--format=${LOG_FORMAT}`, `-n`, String(limit + 1)]
   if (skip) args.push(`--skip=${skip}`)
   const text = (q.text ?? '').trim()
-  if (q.author) args.push(`--author=${q.author}`)
+  // Both filters are literal text: an author like "dependabot[bot]" must not be read as a regex.
+  if (q.author) args.push('--fixed-strings', `--author=${q.author}`)
   if (q.since) args.push(`--since=${q.since}`)
-  const hashLike = /^[0-9a-f]{4,40}$/i.test(text)
-  if (text && !hashLike) args.push('-i', '--fixed-strings', `--grep=${text}`)
-  if (!q.ref || q.ref === 'all') args.push('--branches', '--remotes', '--tags', 'HEAD')
-  else args.push(assertRev(q.ref))
-  args.push('--')
-  if (q.path) args.push(q.path)
-
-  if (text && hashLike && skip === 0) {
-    // A hash: show that commit if it exists, else fall back to a message search.
+  if (text && /^[0-9a-f]{4,40}$/i.test(text) && skip === 0) {
+    // A hash: show that commit if it exists, else fall back to a message search (also on later pages).
     try {
       const one = parseLog(
         await runGit(repo, ['log', '--decorate=full', `--format=${LOG_FORMAT}`, '-n', '1', `${text}^{commit}`, '--'])
       )
       if (one.length) return { commits: one, hasMore: false }
     } catch {}
-    args.splice(args.indexOf('--'), 0, '-i', '--fixed-strings', `--grep=${text}`)
   }
+  if (text) args.push('-i', '--fixed-strings', `--grep=${text}`)
+  if (!q.ref || q.ref === 'all') args.push('--branches', '--remotes', '--tags', 'HEAD')
+  else args.push(assertRev(q.ref))
+  args.push('--')
+  if (q.path) args.push(q.path)
+
   const out = await runGit(repo, args, { okExitCodes: [0, 128] })
   const commits = parseLog(out)
   const hasMore = commits.length > limit
@@ -278,7 +276,9 @@ async function diff(repo, q) {
     args = ['diff', '-M', '--no-ext-diff', ...(q.staged ? ['--cached'] : []), '--', ...paths]
   }
   const out = await runGit(repo, args, { okExitCodes: ok, maxBytes: MAX_DIFF_BYTES })
-  return { diff: out, truncated: out.length >= MAX_DIFF_BYTES - 1 }
+  // The limit is in bytes; a string's length counts UTF-16 units, so non-ASCII diffs were never flagged.
+  // A cut multi-byte character decodes to U+FFFD, hence the small allowance.
+  return { diff: out, truncated: Buffer.byteLength(out, 'utf8') >= MAX_DIFF_BYTES - 3 }
 }
 
 async function status(repo) {
@@ -300,8 +300,10 @@ async function pullArgs(orca) {
   return ['pull', '--no-rebase']
 }
 
+const remoteNames = async (repo) => (await runGit(repo, ['remote'])).split('\n').filter(Boolean)
+
 async function defaultRemote(repo) {
-  const remotes = (await runGit(repo, ['remote'])).split('\n').filter(Boolean)
+  const remotes = await remoteNames(repo)
   if (!remotes.length) throw new GitError('This repository has no remotes')
   return remotes.includes('origin') ? 'origin' : remotes[0]
 }
@@ -326,9 +328,13 @@ async function action(orca, repo, a) {
       const args = ['push']
       if (a.force) args.push('--force-with-lease')
       if (a.branch && a.branch !== st.branch) {
-        // Push a branch that is not checked out, to its upstream or the same name.
-        const remote = await defaultRemote(repo)
-        args.push(remote, `${assertRefName(a.branch, 'branch')}`)
+        // Push a branch that is not checked out: to its upstream if it has one, else to the same name on
+        // the default remote, which becomes its upstream.
+        const name = assertRefName(a.branch, 'branch')
+        const cfg = async (key) => (await runGit(repo, ['config', '--get', key], { okExitCodes: [0, 1] })).trim()
+        const [remote, merge] = await Promise.all([cfg(`branch.${name}.remote`), cfg(`branch.${name}.merge`)])
+        if (remote && remote !== '.' && merge) args.push(remote, `refs/heads/${name}:${merge}`)
+        else args.push('-u', await defaultRemote(repo), name)
       } else if (!st.upstream) {
         if (!st.branch) throw new GitError('HEAD is detached; check out a branch to push')
         args.push('-u', await defaultRemote(repo), 'HEAD')
@@ -338,29 +344,33 @@ async function action(orca, repo, a) {
     case 'updateBranch': {
       // Fast-forward a branch that is not checked out from its upstream ("Update").
       const name = assertRefName(a.branch, 'branch')
-      const up = (await runGit(repo, ['rev-parse', '--abbrev-ref', `${name}@{upstream}`])).trim()
-      const slash = up.indexOf('/')
-      if (slash < 0) throw new GitError(`${name} has no upstream branch`)
-      return runGit(repo, ['fetch', up.slice(0, slash), `${up.slice(slash + 1)}:${name}`], net)
+      // Read the upstream from config rather than splitting "remote/branch", which breaks on "team/a/x".
+      const cfg = async (key) => (await runGit(repo, ['config', '--get', key], { okExitCodes: [0, 1] })).trim()
+      const [remote, merge] = await Promise.all([cfg(`branch.${name}.remote`), cfg(`branch.${name}.merge`)])
+      if (!remote || remote === '.' || !merge) throw new GitError(`${name} has no upstream branch`)
+      return runGit(repo, ['fetch', remote, `${merge}:refs/heads/${name}`], net)
     }
     case 'checkout': {
       const ref = assertRev(a.ref)
       if (a.remote) {
         // Remote branch: check out the local branch of the same name, creating a tracking one.
-        const local = ref.slice(ref.indexOf('/') + 1)
+        const { branch: local } = splitRemoteName(ref, await remoteNames(repo))
         const has = await runGit(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${local}`], {
           okExitCodes: [0, 1]
         })
-        if (has.trim()) return runGit(repo, ['checkout', local])
-        return runGit(repo, ['checkout', '--track', ref])
+        if (has.trim()) return runGit(repo, ['checkout', local, '--'])
+        // Name the branch: --track alone guesses it by cutting at the first slash ("team/a/x" -> "a/x").
+        return runGit(repo, ['checkout', '-b', local, '--track', ref, '--'])
       }
-      if (a.detach) return runGit(repo, ['checkout', '--detach', ref])
-      return runGit(repo, ['checkout', ref])
+      // The trailing "--" makes git read the name as a ref only. Without it, a ref that no longer exists
+      // but matches a path (a "docs" branch and a docs/ folder) restores that path and discards edits.
+      if (a.detach) return runGit(repo, ['checkout', '--detach', ref, '--'])
+      return runGit(repo, ['checkout', ref, '--'])
     }
     case 'createBranch': {
       const name = assertRefName(a.name, 'branch name')
       const start = a.start ? assertRev(a.start) : 'HEAD'
-      if (a.checkout) return runGit(repo, ['checkout', '-b', name, start])
+      if (a.checkout) return runGit(repo, ['checkout', '-b', name, start, '--'])
       return runGit(repo, ['branch', name, start])
     }
     case 'renameBranch':
@@ -368,8 +378,8 @@ async function action(orca, repo, a) {
     case 'deleteBranch': {
       const name = assertRefName(a.name, 'branch')
       if (a.remote) {
-        const slash = name.indexOf('/')
-        return runGit(repo, ['push', name.slice(0, slash), '--delete', name.slice(slash + 1)], net)
+        const { remote, branch } = splitRemoteName(name, await remoteNames(repo))
+        return runGit(repo, ['push', remote, '--delete', branch], net)
       }
       return runGit(repo, ['branch', a.force ? '-D' : '-d', name])
     }
@@ -379,7 +389,7 @@ async function action(orca, repo, a) {
       return runGit(repo, ['rebase', assertRev(a.ref)])
     case 'abort': {
       const what = a.what
-      if (!['merge', 'rebase', 'cherry-pick', 'revert'].includes(what)) throw new GitError('Nothing to abort')
+      if (!['merge', 'rebase', 'am', 'cherry-pick', 'revert'].includes(what)) throw new GitError('Nothing to abort')
       return runGit(repo, [what, '--abort'])
     }
     case 'cherryPick':
@@ -411,7 +421,21 @@ async function action(orca, repo, a) {
     case 'discard': {
       const tracked = assertPaths(a.paths ?? [])
       const untracked = assertPaths(a.untracked ?? [])
-      if (tracked.length) await runGit(repo, ['checkout', 'HEAD', '--', ...tracked])
+      if (tracked.length) {
+        // Files that are not in HEAD (staged as new, or no commit yet) are restored from the index instead:
+        // that drops their unstaged edits and keeps the staged add. One such file used to fail them all.
+        const inHead = new Set(
+          (await runGit(repo, ['ls-tree', '-z', '--name-only', '--full-tree', 'HEAD', '--', ...tracked], {
+            okExitCodes: [0, 128]
+          }))
+            .split('\0')
+            .filter(Boolean)
+        )
+        const fromHead = tracked.filter((p) => inHead.has(p))
+        const fromIndex = tracked.filter((p) => !inHead.has(p))
+        if (fromHead.length) await runGit(repo, ['checkout', 'HEAD', '--', ...fromHead])
+        if (fromIndex.length) await runGit(repo, ['checkout', '--', ...fromIndex])
+      }
       if (untracked.length) await runGit(repo, ['clean', '-f', '-q', '--', ...untracked])
       return ''
     }
@@ -424,7 +448,16 @@ async function action(orca, repo, a) {
       if (message) args.push('-F', '-')
       else args.push('--no-edit')
       const out = await runGit(repo, args, message ? { input: message } : {})
-      if (a.push) await action(orca, repo, { op: 'push' })
+      if (a.push) {
+        try {
+          await action(orca, repo, { op: 'push' })
+        } catch (err) {
+          // The commit exists; saying "commit failed" would invite a duplicate commit.
+          const e = new GitError(`Committed, but the push failed: ${err?.message ?? err}`)
+          e.code = 'push_failed'
+          throw e
+        }
+      }
       return out
     }
     case 'stash':
@@ -442,7 +475,7 @@ async function action(orca, repo, a) {
     case 'continue':
     case 'skip': {
       const what = a.what
-      if (!['rebase', 'cherry-pick', 'revert'].includes(what)) throw new GitError(`Nothing to ${op}`)
+      if (!['rebase', 'am', 'cherry-pick', 'revert'].includes(what)) throw new GitError(`Nothing to ${op}`)
       // core.editor=true accepts git's prepared message instead of opening an editor.
       return runGit(repo, ['-c', 'core.editor=true', what, `--${op}`])
     }
@@ -459,7 +492,14 @@ function createStatusTracker(orca) {
   /** @type {string | null} */
   let repo = null
   let name = ''
-  let busy = false
+  /** @type {Promise<any> | null} */
+  let running = null
+  let again = false
+  /** @type {Promise<void> | null} */
+  let fetching = null
+  let scheduleGen = 0
+  /** Last status seen per repository, to tell the panel about commits and checkouts made outside it. */
+  let lastSig = { repo: '', sig: '' }
   let lastBehind = new Map()
   let statusTimer = null
   let fetchTimer = null
@@ -481,19 +521,51 @@ function createStatusTracker(orca) {
     }
   }
 
-  async function refresh() {
-    if (!repo) {
+  /**
+   * Updates the status bar for the current repository and resolves with its status. A call while one is
+   * running is not dropped: the running one goes round again, so a focus change during a slow refresh
+   * still ends with the new repository on screen.
+   */
+  function refresh() {
+    if (running) {
+      again = true
+      return running
+    }
+    running = (async () => {
+      let st
+      do {
+        again = false
+        st = await refreshOnce()
+      } while (again)
+      return st
+    })().finally(() => (running = null))
+    return running
+  }
+
+  async function refreshOnce() {
+    const target = repo
+    if (!target) {
       await show({ visible: false })
       return
     }
-    if (busy) return
-    busy = true
     try {
       const st = parseStatus(
-        await runGit(repo, ['status', '--porcelain=v2', '--branch', '-z', '--untracked-files=no'], {
+        await runGit(target, ['status', '--porcelain=v2', '--branch', '-z', '--untracked-files=no'], {
           timeoutMs: 20_000
         })
       )
+      if (repo !== target) {
+        // Focus moved while git ran: this status belongs to the previous repository.
+        again = true
+        return
+      }
+      const sig = JSON.stringify([st.branch, st.oid, st.upstream, st.ahead, st.behind, st.files])
+      if (lastSig.repo === target && lastSig.sig !== sig) {
+        // Something changed HEAD, the counts or the files (a terminal, another tool): let the panel catch up.
+        // No reason: the panel keeps the last operation it ran for its own conflict hints.
+        orca.panels.post('repo.changed', { repo: target, external: true })
+      }
+      lastSig = { repo: target, sig }
       const label = st.branch ?? (st.oid ? `detached ${st.oid.slice(0, 8)}` : 'no commits')
       const parts = [label]
       if (st.ahead) parts.push(`↑${st.ahead}`)
@@ -503,7 +575,8 @@ function createStatusTracker(orca) {
         `${name}: ${label}`,
         st.upstream ? `Tracking ${st.upstream}` : 'No upstream branch',
         st.upstream ? `${st.ahead} outgoing, ${st.behind} incoming` : null,
-        changed ? `${changed} changed file${changed === 1 ? '' : 's'}` : 'Working tree clean',
+        // Untracked files are not counted (scanning for them is slow on big trees), so do not claim "clean".
+        changed ? `${changed} changed file${changed === 1 ? '' : 's'}` : 'No changes to tracked files',
         'Click to fetch'
       ]
         .filter(Boolean)
@@ -516,13 +589,31 @@ function createStatusTracker(orca) {
       })
       return st
     } catch (err) {
+      if (repo !== target) {
+        again = true
+        return
+      }
       await show({ visible: true, text: 'Git: unavailable', tone: 'neutral', tooltip: String(err?.message ?? err) })
-    } finally {
-      busy = false
     }
   }
 
+  /** One fetch at a time: an auto-fetch is skipped while one runs, a requested fetch waits for it. */
   async function fetchNow({ quiet }) {
+    if (fetching && quiet) return
+    while (fetching) await fetching
+    const run = fetchOnce({ quiet })
+    const done = run.then(
+      () => undefined,
+      () => undefined
+    )
+    fetching = done
+    void done.then(() => {
+      if (fetching === done) fetching = null
+    })
+    return run
+  }
+
+  async function fetchOnce({ quiet }) {
     if (!repo) return
     const target = repo
     try {
@@ -534,6 +625,7 @@ function createStatusTracker(orca) {
     }
     const st = await refresh()
     orca.panels.post('repo.changed', { repo: target, reason: 'fetch' })
+    if (repo !== target) return // the status is another repository's now
     if (quiet && st && st.branch && (await setting('notifyBehind', true))) {
       const key = `${target}\n${st.branch}`
       const prev = lastBehind.get(key) ?? 0
@@ -550,11 +642,14 @@ function createStatusTracker(orca) {
   }
 
   async function reschedule() {
+    const gen = ++scheduleGen
+    const statusSec = Number(await setting('statusRefreshSeconds', 30))
+    const fetchMin = Number(await setting('autoFetchMinutes', 15))
+    // Clear after reading the settings: two overlapping calls would otherwise both set timers and leak one.
+    if (gen !== scheduleGen) return
     if (statusTimer) clearInterval(statusTimer)
     if (fetchTimer) clearInterval(fetchTimer)
     statusTimer = fetchTimer = null
-    const statusSec = Number(await setting('statusRefreshSeconds', 30))
-    const fetchMin = Number(await setting('autoFetchMinutes', 15))
     if (statusSec > 0) statusTimer = setInterval(() => void refresh(), statusSec * 1000)
     if (fetchMin > 0) fetchTimer = setInterval(() => void fetchNow({ quiet: true }), fetchMin * 60_000)
   }
@@ -624,19 +719,21 @@ export default async function activate(orca) {
   )
 
   const runOnFocused = (op) => async () => {
-    if (!tracker.repo) return 'No Git workspace is focused'
+    // Keep the repository the command started on, even if focus moves while it runs.
+    const repo = tracker.repo
+    if (!repo) return 'No Git workspace is focused'
     try {
       if (op === 'fetch') {
         await tracker.fetchNow({ quiet: false })
         return 'Fetched all remotes'
       }
-      const out = await action(orca, tracker.repo, { op })
-      void tracker.refresh()
-      orca.panels.post('repo.changed', { repo: tracker.repo, reason: op })
+      const out = await action(orca, repo, { op })
+      if (repo === tracker.repo) void tracker.refresh()
+      orca.panels.post('repo.changed', { repo, reason: op })
       return (typeof out === 'string' && out.trim().split('\n').slice(-3).join('\n')) || `${op} done`
     } catch (err) {
-      orca.panels.post('repo.changed', { repo: tracker.repo, reason: op })
-      const conflicts = await conflictInfo(tracker.repo).then((c) => c.files.length, () => 0)
+      orca.panels.post('repo.changed', { repo, reason: op })
+      const conflicts = await conflictInfo(repo).then((c) => c.files.length, () => 0)
       const hint = conflicts ? ` (${conflicts} conflict${conflicts === 1 ? '' : 's'}: open the Git panel to resolve them)` : ''
       return `${op} failed: ${err?.message ?? err}${hint}`
     }

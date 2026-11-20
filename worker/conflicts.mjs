@@ -40,15 +40,22 @@ export async function operationInProgress(repo) {
       return false
     }
   }
-  const [merge, rebaseMerge, rebaseApply, cherryPick, revert] = await Promise.all([
+  const [merge, rebaseMerge, rebaseApply, applying, cherryPick, revert] = await Promise.all([
     verify('MERGE_HEAD'),
     exists('rebase-merge'),
     exists('rebase-apply'),
+    // `git am` uses the rebase-apply folder too, and marks it with an "applying" file. hash-object reads a
+    // file, so it fails exactly when the file is missing (and works through WSL, like the folder check).
+    runGit(repo, ['rev-parse', '--git-path', 'rebase-apply/applying']).then(
+      (p) => runGit(repo, ['hash-object', '--', p.trim()]).then(() => true, () => false),
+      () => false
+    ),
     verify('CHERRY_PICK_HEAD'),
     verify('REVERT_HEAD')
   ])
-  const rebase = rebaseMerge || rebaseApply
-  return merge ? 'merge' : rebase ? 'rebase' : cherryPick ? 'cherry-pick' : revert ? 'revert' : null
+  const rebase = rebaseMerge || (rebaseApply && !applying)
+  const am = rebaseApply && applying
+  return merge ? 'merge' : am ? 'am' : rebase ? 'rebase' : cherryPick ? 'cherry-pick' : revert ? 'revert' : null
 }
 
 /** @param {string} repo @param {string} rev */
@@ -96,6 +103,10 @@ export async function conflictInfo(repo) {
   } else if (op === 'rebase') {
     oursLabel = `Upstream: ${await refName(repo, 'HEAD')}`
     theirsLabel = `Your commit: ${await oneLine(repo, 'REBASE_HEAD')}`
+  } else if (op === 'am') {
+    // Like a rebase: HEAD is where the patches go, the patch being applied is the incoming side.
+    oursLabel = await currentBranch(repo)
+    theirsLabel = 'Patch being applied'
   } else if (op === 'cherry-pick') {
     oursLabel = await currentBranch(repo)
     theirsLabel = `Cherry-pick: ${await oneLine(repo, 'CHERRY_PICK_HEAD')}`
@@ -130,7 +141,8 @@ const isText = (buf) => !buf.subarray(0, 8000).includes(0) && Buffer.from(buf.to
 export async function readConflict(repo, path) {
   assertPaths([path])
   const st = await stages(repo, path)
-  if (!st[2] && !st[3]) throw new GitError(`${path} is not in conflict`)
+  // Deleted on both sides leaves only the base (stage 1): still a conflict, resolved by keeping it deleted.
+  if (!st[1] && !st[2] && !st[3]) throw new GitError(`${path} is not in conflict`)
   const blob = (s) =>
     s ? runGit(repo, ['cat-file', 'blob', s.sha], { buffer: true, maxBytes: MAX_MERGE_BYTES + 1 }) : Promise.resolve(null)
   const [base, ours, theirs] = await Promise.all([blob(st[1]), blob(st[2]), blob(st[3])])
@@ -161,7 +173,8 @@ export async function readConflict(repo, path) {
     theirs: text(theirs),
     current,
     whole,
-    mode: (st[2] ?? st[3]).mode
+    deleted: !st[2] && !st[3] ? 'both' : !st[2] ? 'ours' : !st[3] ? 'theirs' : null,
+    mode: (st[2] ?? st[3] ?? st[1]).mode
   }
 }
 
@@ -176,6 +189,9 @@ export async function writeResolved(repo, path, content) {
   assertPaths([path])
   if (typeof content !== 'string') throw new GitError('Missing content')
   const st = await stages(repo, path)
+  // Only a conflicted file may be overwritten this way: a stale merge view (the conflict was resolved
+  // elsewhere, or the panel switched repositories) must not replace a file that is not in conflict.
+  if (!st[1] && !st[2] && !st[3]) throw new GitError(`${path} is no longer in conflict`)
   const mode = (st[2] ?? st[3])?.mode ?? '100644'
   const sha = (await runGit(repo, ['hash-object', '-w', '--stdin', '--no-filters'], { input: content })).trim()
   await runGit(repo, ['update-index', '--add', '--cacheinfo', `${mode},${sha},${path}`])

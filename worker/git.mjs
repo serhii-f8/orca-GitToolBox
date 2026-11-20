@@ -28,7 +28,15 @@ export function parseRepoPath(p) {
 export function buildCommand(repo, args, platform = process.platform) {
   const loc = parseRepoPath(repo)
   const gitArgs = ['-c', 'core.quotepath=off', '-c', 'color.ui=never', '-c', 'core.pager=cat', ...args]
-  const env = { GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', LC_ALL: 'C.UTF-8' }
+  // GIT_LITERAL_PATHSPECS: file names are never patterns, so ":foo" or "*.txt" name exactly that file.
+  // GIT_EDITOR=true: nothing can open an editor here, and GIT_EDITOR outranks any core.editor setting.
+  const env = {
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_OPTIONAL_LOCKS: '0',
+    GIT_LITERAL_PATHSPECS: '1',
+    GIT_EDITOR: 'true',
+    LC_ALL: 'C.UTF-8'
+  }
   if (loc.kind === 'wsl' && platform === 'win32') {
     // --exec skips the login shell, so arguments arrive exactly as given; `env` sets variables
     // that would not cross the Windows/Linux boundary otherwise.
@@ -115,6 +123,8 @@ export function runGit(repo, args, opts = {}) {
         reject(new GitError(msg, { stderr, exitCode: code }))
       }
     })
+    // git may exit before reading all of its input (an error, or output cut at maxBytes): ignore EPIPE.
+    child.stdin.on('error', () => {})
     if (input !== undefined) child.stdin.end(input, 'utf8')
     else child.stdin.end()
   })
@@ -174,8 +184,23 @@ export function parseTrack(track) {
   }
 }
 
-/** @param {string} out output of `git for-each-ref --format=REF_FORMAT` */
-export function parseRefs(out) {
+/**
+ * Splits "remote/branch" on the longest known remote name, so a remote called "team/a" works. Without the
+ * list of remotes (or no match), the first slash is used.
+ * @param {string} name @param {string[]} [remotes]
+ */
+export function splitRemoteName(name, remotes = []) {
+  const remote = remotes.filter((r) => name.startsWith(`${r}/`)).sort((a, b) => b.length - a.length)[0]
+  if (remote) return { remote, branch: name.slice(remote.length + 1) }
+  const slash = name.indexOf('/')
+  return slash > 0 ? { remote: name.slice(0, slash), branch: name.slice(slash + 1) } : { remote: name, branch: name }
+}
+
+/**
+ * @param {string} out output of `git for-each-ref --format=REF_FORMAT`
+ * @param {string[]} [remoteNames] names from `git remote`, to split remote branch names correctly
+ */
+export function parseRefs(out, remoteNames = []) {
   const locals = []
   const remotes = []
   const tags = []
@@ -195,11 +220,9 @@ export function parseRefs(out) {
     } else if (ref.startsWith('refs/remotes/')) {
       const name = ref.slice(13)
       if (name.endsWith('/HEAD')) continue
-      const slash = name.indexOf('/')
       remotes.push({
         name,
-        remote: slash > 0 ? name.slice(0, slash) : name,
-        branch: slash > 0 ? name.slice(slash + 1) : name,
+        ...splitRemoteName(name, remoteNames),
         sha,
         date: Number(date) || 0,
         subject: subject ?? ''

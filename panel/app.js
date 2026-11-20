@@ -2,6 +2,7 @@
 // Every git call goes to the plugin's worker through orca.plugin.request.
 import { createGraph } from './graph.js'
 import { createConflictUI } from './mergeview.js'
+import { diffHtml } from './diff.js'
 
 /* global orca */
 const $ = (sel, root = document) => root.querySelector(sel)
@@ -44,6 +45,14 @@ function applyIcons(root = document) {
   for (const el of $$('[data-icon]', root)) {
     if (!el.firstElementChild) el.insertAdjacentHTML('afterbegin', icon(el.dataset.icon))
   }
+}
+
+/** "remote/branch" split on the longest known remote name (a remote may be called "team/a"). */
+function splitRemote(name) {
+  const remote = (state.branches?.remotesList ?? []).filter((r) => name.startsWith(`${r}/`)).sort((a, b) => b.length - a.length)[0]
+  if (remote) return { remote, branch: name.slice(remote.length + 1) }
+  const slash = name.indexOf('/')
+  return slash > 0 ? { remote: name.slice(0, slash), branch: name.slice(slash + 1) } : { remote: name, branch: name }
 }
 
 const esc = (s) =>
@@ -120,6 +129,11 @@ function updateBusy() {
 
 /** Runs a git action, reports the result and refreshes. Resolves to true on success. */
 async function act(op, args = {}, { success, quiet = false, timeoutMs = 120_000, refresh = true } = {}) {
+  // One action at a time: a double click on Commit or Push must not run it twice.
+  if (state.acting) {
+    toast('Another Git action is running', 'Wait for it to finish, then try again.', { timeout: 3000 })
+    return false
+  }
   state.acting = true
   state.lastOp = op
   try {
@@ -170,6 +184,7 @@ const conflictsUI = createConflictUI({
   esc: (x) => esc(x),
   icon: (n) => icon(n),
   repo: () => state.repo,
+  closePopups: () => closePopups(),
   // A refresh already in flight may have read the status before the change: read it once more.
   afterChange: () => void refreshAll().then(() => loadStatus()).catch(() => undefined)
 })
@@ -255,7 +270,14 @@ function hideMenu() {
  *   choice?: string; ok?: string; danger?: boolean; cancel?: string | false }} o
  * @returns {Promise<{ value: string; checked: boolean; choice: string } | null>}
  */
+/** Popovers must not stay open over a dialog: they float above it and keep their own keyboard handling. */
+function closePopups() {
+  hideMenu()
+  if (switcherOpen()) closeSwitcher()
+}
+
 function ask(o) {
+  closePopups()
   return new Promise((resolve) => {
     const modal = $('#modal')
     const input = o.input
@@ -446,6 +468,11 @@ async function setRepo(path) {
   state.stashKept = false
   state.lastOp = ''
   conflictsUI.closeDialog()
+  // A merge view belongs to the repository it was opened in: applying it here would write to the new one.
+  if (conflictsUI.mergeOpen) {
+    void conflictsUI.closeMerge({ force: true })
+    toast('Merge view closed', 'The project changed. The conflict is still there; reopen it from the Conflicts dialog.', { timeout: 6000 })
+  }
   renderSwitcherButton()
   renderDetailsEmpty()
   $('#changesDiff').innerHTML = '<div class="empty"><strong>No file selected</strong>Pick a file to see its diff.</div>'
@@ -840,9 +867,9 @@ function renderLogEmpty() {
 }
 
 async function loadLog(reset = true, keepSelection = true) {
-  const token = ++state.logToken
   const rowsEl = $('#rows')
   if (reset) {
+    const token = ++state.logToken
     state.loadingLog = true
     let res
     try {
@@ -876,7 +903,10 @@ async function loadLog(reset = true, keepSelection = true) {
     if (!state.commits.length) renderLogEmpty()
     return
   }
+  // A page load keeps the current token: only a reset may invalidate requests in flight. Taking a new
+  // token here would make a second scroll event discard the page being loaded and leave loadingLog stuck.
   if (state.loadingLog || !state.hasMore) return
+  const token = state.logToken
   state.loadingLog = true
   try {
     const res = await req('git.log', { ...state.filters, skip: state.commits.length, limit: state.pageSize })
@@ -940,9 +970,9 @@ function refBadges(refs, lane = 0) {
   const out = []
   for (const r of refs) if (r.type === 'head') out.push(`<span class="ref head" ${style} title="Detached HEAD">${icon('head')}HEAD</span>`)
   for (const l of locals) {
-    const twins = remotes.filter((r) => r.name.slice(r.name.indexOf('/') + 1) === l.name)
+    const twins = remotes.filter((r) => splitRemote(r.name).branch === l.name)
     twins.forEach((t) => used.add(t.name))
-    const label = twins.length ? `${twins.map((t) => t.name.slice(0, t.name.indexOf('/'))).join(' & ')} & ${l.name}` : l.name
+    const label = twins.length ? `${twins.map((t) => splitRemote(t.name).remote).join(' & ')} & ${l.name}` : l.name
     const tip = l.current ? `${label} (current branch)` : label
     out.push(`<span class="ref local${l.current ? ' current' : ''}" ${style} title="${esc(tip)}">${icon('branch')}<span>${esc(label)}</span></span>`)
   }
@@ -1171,38 +1201,6 @@ async function showCommitDiff(f) {
   }
 }
 
-function diffHtml(text, truncated) {
-  if (!text.trim()) return '<div class="diff"><div class="info">No textual changes (mode change or empty file).</div></div>'
-  const out = []
-  let oldN = 0
-  let newN = 0
-  let count = 0
-  for (const line of text.split('\n')) {
-    if (count++ > 20_000) {
-      out.push('<div class="info">Diff too long to show in full.</div>')
-      break
-    }
-    if (/^(diff --git|index |--- |\+\+\+ |new file mode|deleted file mode|similarity index|rename from|rename to|old mode|new mode)/.test(line)) continue
-    if (line.startsWith('Binary files')) {
-      out.push(`<div class="info">${esc(line)}</div>`)
-      continue
-    }
-    const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line)
-    if (m) {
-      oldN = Number(m[1])
-      newN = Number(m[2])
-      out.push(`<div class="l hunk"><span class="ln"></span><span class="ln"></span><span class="code">${esc(line)}</span></div>`)
-      continue
-    }
-    if (line.startsWith('+')) out.push(`<div class="l add"><span class="ln"></span><span class="ln">${newN++}</span><span class="code">${esc(line)}</span></div>`)
-    else if (line.startsWith('-')) out.push(`<div class="l del"><span class="ln">${oldN++}</span><span class="ln"></span><span class="code">${esc(line)}</span></div>`)
-    else if (line.startsWith('\\')) out.push(`<div class="l"><span class="ln"></span><span class="ln"></span><span class="code">${esc(line)}</span></div>`)
-    else if (line.length || oldN) out.push(`<div class="l"><span class="ln">${oldN++}</span><span class="ln">${newN++}</span><span class="code">${esc(line)}</span></div>`)
-  }
-  if (truncated) out.push('<div class="info">Diff truncated.</div>')
-  return `<div class="diff">${out.join('')}</div>`
-}
-
 // ------------------------------------------------------------------------------------------------
 // Local changes
 
@@ -1214,6 +1212,14 @@ async function loadStatus() {
   state.status = status
   if (sig === state.sig.status) return
   state.sig.status = sig
+  // Commits or a checkout made outside the panel: the branch chip, tree and log are behind, so reload them.
+  // Only when the status changed, so a lasting disagreement cannot start a refresh loop.
+  const b = state.branches
+  const cur = b?.locals.find((l) => l.current)
+  if (b && status.oid && (b.head.sha !== status.oid || (b.head.branch ?? null) !== status.branch || (cur && status.upstream && (cur.ahead !== status.ahead || cur.behind !== status.behind)))) {
+    clearTimeout(changedTimer)
+    changedTimer = setTimeout(() => void refreshAll(), 300)
+  }
   const n = status.files.length
   $('#changesCount').textContent = n ? String(n) : ''
   const conflicts = status.files.filter((f) => f.kind === 'conflict').length
@@ -1249,7 +1255,7 @@ function renderBanner() {
   const banner = $('#banner')
   const op = st?.inProgress ?? null
   const conflicts = st?.files.filter((f) => f.kind === 'conflict').length ?? 0
-  const label = op ? { merge: 'Merge', rebase: 'Rebase', 'cherry-pick': 'Cherry-pick', revert: 'Revert' }[op] : ''
+  const label = op ? ({ merge: 'Merge', rebase: 'Rebase', am: 'git am', 'cherry-pick': 'Cherry-pick', revert: 'Revert' }[op] ?? op) : ''
   /** @type {[string, string, string][]} action, text, class */
   const buttons = []
   let text = ''
@@ -1262,12 +1268,12 @@ function renderBanner() {
     buttons.push(['commitMerge', 'Commit merge', 'primary'])
   } else if (op) {
     text = `${label} paused: nothing is in conflict.`
-    buttons.push(['continue', `Continue ${op}`, 'primary'], ['skip', 'Skip this commit', 'secondary'])
+    buttons.push(['continue', `Continue ${op === 'am' ? 'git am' : op}`, 'primary'], ['skip', op === 'am' ? 'Skip this patch' : 'Skip this commit', 'secondary'])
   } else if (state.stashKept) {
     text = 'Conflicts resolved. The stash was kept.'
     buttons.push(['dropStash', 'Drop stash', 'secondary'], ['dismiss', 'Dismiss', 'secondary'])
   }
-  if (op) buttons.push(['abort', `Abort ${label.toLowerCase()}`, 'secondary'])
+  if (op) buttons.push(['abort', `Abort ${op === 'am' ? label : label.toLowerCase()}`, 'secondary'])
   if (!text) {
     banner.classList.add('hidden')
     banner.innerHTML = ''
@@ -1490,7 +1496,15 @@ async function commit(push) {
     if (!ok) return
     all = true
   }
-  const done = await tryAct('commit', { message, amend, all, push }, { success: push ? 'Committed and pushed' : amend ? 'Commit amended' : 'Committed', timeoutMs: 120_000 })
+  let done
+  try {
+    done = await act('commit', { message, amend, all, push }, { success: push ? 'Committed and pushed' : amend ? 'Commit amended' : 'Committed', timeoutMs: 120_000 })
+  } catch (err) {
+    // A rejected push after a successful commit: the commit is made, so clear the form like a success.
+    const pushOnly = err?.code === 'push_failed' || /^Committed, but the push failed/.test(err?.message ?? '')
+    toastError(pushOnly ? 'Committed, but push failed' : 'Commit failed', err)
+    done = pushOnly
+  }
   if (done) {
     msgEl.value = ''
     updateSubjectHint()
@@ -1518,7 +1532,7 @@ async function onAmendToggle() {
 
 async function checkout(ref, opts = {}) {
   try {
-    await act('checkout', { ref, ...opts }, { success: `Checked out ${opts.remote ? ref.slice(ref.indexOf('/') + 1) : ref.length === 40 ? ref.slice(0, 8) : ref}` })
+    await act('checkout', { ref, ...opts }, { success: `Checked out ${opts.remote ? splitRemote(ref).branch : ref.length === 40 ? ref.slice(0, 8) : ref}` })
   } catch (err) {
     if (/would be overwritten|commit your changes or stash/i.test(err.message)) {
       const ok = await ask({

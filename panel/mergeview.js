@@ -50,9 +50,10 @@ export function createConflictUI(d) {
   }
 
   const opTitle = (op) =>
-    ({ merge: 'Merge', rebase: 'Rebase', 'cherry-pick': 'Cherry-pick', revert: 'Revert' })[op] ?? 'Conflicts'
+    ({ merge: 'Merge', rebase: 'Rebase', am: 'git am', 'cherry-pick': 'Cherry-pick', revert: 'Revert' })[op] ?? 'Conflicts'
 
   async function openDialog() {
+    d.closePopups?.()
     dialogOpen = true
     selected = new Set()
     try {
@@ -187,8 +188,8 @@ export function createConflictUI(d) {
   function finishHtml() {
     const op = info?.op
     if (op === 'merge') return `<div class="cf-finish"><button type="button" class="primary" data-cf="finish:commitMerge">Commit merge</button></div>`
-    if (op === 'rebase' || op === 'cherry-pick' || op === 'revert')
-      return `<div class="cf-finish"><button type="button" class="primary" data-cf="finish:continue">Continue ${esc(op)}</button><button type="button" data-cf="finish:skip">Skip this commit</button></div>`
+    if (op === 'rebase' || op === 'am' || op === 'cherry-pick' || op === 'revert')
+      return `<div class="cf-finish"><button type="button" class="primary" data-cf="finish:continue">Continue ${esc(op === 'am' ? 'git am' : op)}</button><button type="button" data-cf="finish:skip">${op === 'am' ? 'Skip this patch' : 'Skip this commit'}</button></div>`
     return ''
   }
 
@@ -225,6 +226,7 @@ export function createConflictUI(d) {
    * @param {{ fromDialog?: boolean }} [o]
    */
   async function openMerge(path, o = {}) {
+    d.closePopups?.()
     if (view && !(await closeMerge())) return
     let data
     try {
@@ -232,6 +234,15 @@ export function createConflictUI(d) {
       data = await d.req('git.conflict', { path })
     } catch (err) {
       d.toastError('Could not open the merge view', err)
+      return
+    }
+    if (data.deleted === 'both') {
+      const ok = await d.ask({
+        title: `Resolve ${path}`,
+        message: 'Both sides deleted this file. Keep it deleted to resolve the conflict.',
+        ok: 'Keep Deleted'
+      })
+      if (ok) await d.tryAct('resolveSide', { paths: [path], side: 'ours' }, { quiet: true })
       return
     }
     if (data.whole) {
@@ -476,9 +487,10 @@ export function createConflictUI(d) {
   }
 
   /** Closes the merge view, asking first when it holds work. Resolves false if the person keeps it. */
-  async function closeMerge() {
+  /** @param {{ force?: boolean }} [opts] force: close without asking (the panel switched repositories). */
+  async function closeMerge({ force = false } = {}) {
     if (!view) return true
-    if (dirty()) {
+    if (!force && dirty()) {
       const ok = await d.ask({ title: 'Discard this merge?', message: `Your choices for ${view.path} will be lost.`, ok: 'Discard', danger: true })
       if (!ok) return false
     }

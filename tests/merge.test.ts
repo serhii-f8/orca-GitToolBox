@@ -125,6 +125,8 @@ test('hasConflictMarkers', () => {
   assert.equal(hasConflictMarkers('a\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> b\n'), true)
   assert.equal(hasConflictMarkers('a\n  <<<<<<< not at start\n'), false)
   assert.equal(hasConflictMarkers('plain\n'), false)
+  assert.equal(hasConflictMarkers('Title\n=======\n\nText\n'), false)
+  assert.equal(hasConflictMarkers('a\nx\n>>>>>>> theirs\n'), true)
 })
 
 test('diffLines hunks rebuild the other side for random inputs', () => {
@@ -142,4 +144,23 @@ test('diffLines hunks rebuild the other side for random inputs', () => {
     out.push(...a.slice(p))
     assert.deepEqual(out, b)
   }
+})
+
+test('taking both sides keeps lines apart when a side has no final newline', () => {
+  const m = createMerge(buildRegions('a\nb', 'a\nO', 'a\nT'))
+  const i = m.regions.findIndex((r) => r.type === 'chunk')
+  take(m, i, 'ours')
+  take(m, i, 'theirs')
+  assert.equal(resultText(m), 'a\nO\nT')
+  const crlf = createMerge(buildRegions('a\r\nb', 'a\r\nO', 'a\r\nT'))
+  const j = crlf.regions.findIndex((r) => r.type === 'chunk')
+  take(crlf, j, 'theirs')
+  take(crlf, j, 'ours')
+  assert.equal(resultText(crlf), 'a\r\nT\r\nO')
+})
+
+test('a file whose every line changed (CRLF against LF) diffs as one hunk without the quadratic trace', () => {
+  const lf = Array.from({ length: 20000 }, (_, i) => `line ${i}\n`)
+  const crlf = lf.map((l) => l.replace('\n', '\r\n'))
+  assert.deepEqual(diffLines(lf, crlf), [{ aStart: 0, aEnd: 20000, bStart: 0, bEnd: 20000 }])
 })
