@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { conflictInfo, readConflict, writeResolved, resolveSide, conflictType, operationInProgress } from '../worker/conflicts.mjs'
+import { conflictInfo, readConflict, writeResolved, resolveSide, conflictType, operationInProgress, operationInProgressViaGit } from '../worker/conflicts.mjs'
 
 const dirs: string[] = []
 after(() => {
@@ -183,6 +183,7 @@ test('rebase state ends when the rebase finishes, though git keeps REBASE_HEAD',
     r.git('rebase', 'main')
   } catch {}
   assert.equal(await operationInProgress(r.dir), 'rebase')
+  assert.equal(await operationInProgressViaGit(r.dir), 'rebase')
   await resolveSide(r.dir, ['f.txt'], 'theirs')
   r.git('-c', 'core.editor=true', 'rebase', '--continue')
   assert.equal(await operationInProgress(r.dir), null)
@@ -224,8 +225,10 @@ test('a stopped "git am" is reported as am, not as a rebase', async () => {
     git('am', '-3', 'p.patch')
   } catch {}
   assert.equal(await operationInProgress(dir), 'am')
+  assert.equal(await operationInProgressViaGit(dir), 'am')
   git('am', '--abort')
   assert.equal(await operationInProgress(dir), null)
+  assert.equal(await operationInProgressViaGit(dir), null)
 })
 
 test('a file deleted on both sides opens as a conflict and resolves by staying deleted', async () => {

@@ -273,14 +273,18 @@ export function isResolved(m, i) {
   return !!s.manual || (s.ours !== 'pending' && s.theirs !== 'pending')
 }
 
-/** Unresolved conflicts and unresolved one-sided changes. @param {Merge} m */
+/**
+ * Conflicts nobody has decided yet, and unresolved one-sided changes. A conflict where one side was taken
+ * counts as decided: the other side can still be appended, but the Result already has an answer there.
+ * @param {Merge} m
+ */
 export function counts(m) {
   let conflicts = 0
   let changes = 0
   m.regions.forEach((r, i) => {
     if (r.type !== 'chunk' || isResolved(m, i)) return
-    if (r.kind === 'conflict') conflicts++
-    else changes++
+    if (r.kind !== 'conflict') changes++
+    else if (m.state[i].ours !== 'taken' && m.state[i].theirs !== 'taken') conflicts++
   })
   return { conflicts, changes }
 }

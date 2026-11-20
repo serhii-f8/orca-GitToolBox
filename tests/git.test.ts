@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   buildCommand,
+  hostPath,
+  splitRemoteName,
   parseDecoration,
   parseLog,
   parseNameStatus,
@@ -129,4 +131,17 @@ test('commit message goes through stdin', async () => {
 
 test('git failures reject with stderr', async () => {
   await assert.rejects(runGit(dir, ['checkout', 'no-such-branch']), /no-such-branch/)
+})
+
+test('hostPath maps paths git prints to paths this host can open', () => {
+  const wsl = '\\\\wsl.localhost\\Ubuntu\\srv\\app'
+  assert.equal(hostPath(wsl, '.git/MERGE_HEAD', 'win32'), '\\\\wsl.localhost\\Ubuntu\\srv\\app\\.git\\MERGE_HEAD')
+  assert.equal(hostPath(wsl, '/srv/main/.git/worktrees/app/HEAD', 'win32'), '\\\\wsl.localhost\\Ubuntu\\srv\\main\\.git\\worktrees\\app\\HEAD')
+  assert.equal(hostPath('/srv/app', '.git/HEAD', 'linux'), '/srv/app/.git/HEAD')
+  assert.equal(hostPath('/srv/app', '/srv/main/.git/worktrees/app/HEAD', 'linux'), '/srv/main/.git/worktrees/app/HEAD')
+})
+
+test('splitRemoteName prefers the longest known remote', () => {
+  assert.deepEqual(splitRemoteName('team/a/feature/x', ['team', 'team/a']), { remote: 'team/a', branch: 'feature/x' })
+  assert.deepEqual(splitRemoteName('origin/main', []), { remote: 'origin', branch: 'main' })
 })

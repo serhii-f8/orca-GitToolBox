@@ -164,3 +164,12 @@ test('a file whose every line changed (CRLF against LF) diffs as one hunk withou
   const crlf = lf.map((l) => l.replace('\n', '\r\n'))
   assert.deepEqual(diffLines(lf, crlf), [{ aStart: 0, aEnd: 20000, bStart: 0, bEnd: 20000 }])
 })
+
+test('a conflict with one side taken no longer counts as left', () => {
+  const m = createMerge(buildRegions('a\nb\nc\n', 'a\nO\nc\n', 'a\nT\nc\n'))
+  const i = m.regions.findIndex((r) => r.type === 'chunk')
+  assert.deepEqual(counts(m), { conflicts: 1, changes: 0 })
+  take(m, i, 'ours')
+  assert.deepEqual(counts(m), { conflicts: 0, changes: 0 })
+  assert.equal(isResolved(m, i), false) // the other side can still be appended
+})

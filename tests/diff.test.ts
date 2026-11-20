@@ -43,3 +43,11 @@ test('HTML in diff lines is escaped', () => {
   assert.ok(!html.includes('<img'))
   assert.ok(html.includes('&lt;img'))
 })
+
+test('binary files get a kind and size summary', async () => {
+  const { binarySummary } = await import('../panel/diff.js')
+  assert.equal(binarySummary('Binary files a/img/logo.png and b/img/logo.png differ', { oldSize: 2048, newSize: 3072 }), 'Binary PNG file changed · 2.0 KB → 3.0 KB (+1.0 KB)')
+  assert.equal(binarySummary('Binary files /dev/null and b/blob.bin differ', { oldSize: 0, newSize: 500 }), 'Binary BIN file added · 500 B')
+  assert.equal(binarySummary('Binary files a/x and /dev/null differ', { oldSize: 10, newSize: 0 }), 'Binary file deleted · 10 B')
+  assert.equal(binarySummary('Binary files a/x.dat and b/x.dat differ', null), 'Binary DAT file changed')
+})

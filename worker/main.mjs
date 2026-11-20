@@ -261,6 +261,15 @@ async function commitDetails(repo, hash) {
  * @param {{ hash?: string; parent?: string | null; path: string; oldPath?: string; staged?: boolean; untracked?: boolean }} q
  */
 async function diff(repo, q) {
+  if (q.stash) {
+    // A whole stash entry, untracked files included (git 2.32+; older git shows the tracked part).
+    const ref = assertStash(q.stash)
+    const base = ['stash', 'show', '-p', '-M', '--no-ext-diff', '--no-color']
+    const out = await runGit(repo, [...base, '--include-untracked', ref], { maxBytes: MAX_DIFF_BYTES }).catch(() =>
+      runGit(repo, [...base, ref], { maxBytes: MAX_DIFF_BYTES })
+    )
+    return { diff: out, truncated: Buffer.byteLength(out, 'utf8') >= MAX_DIFF_BYTES - 3, binary: null }
+  }
   const paths = assertPaths(q.oldPath && q.oldPath !== q.path ? [q.oldPath, q.path] : [q.path])
   let args
   let ok = [0]
@@ -278,7 +287,37 @@ async function diff(repo, q) {
   const out = await runGit(repo, args, { okExitCodes: ok, maxBytes: MAX_DIFF_BYTES })
   // The limit is in bytes; a string's length counts UTF-16 units, so non-ASCII diffs were never flagged.
   // A cut multi-byte character decodes to U+FFFD, hence the small allowance.
-  return { diff: out, truncated: Buffer.byteLength(out, 'utf8') >= MAX_DIFF_BYTES - 3 }
+  const truncated = Buffer.byteLength(out, 'utf8') >= MAX_DIFF_BYTES - 3
+  /** @type {{ oldSize: number; newSize: number } | null} */
+  let binary = null
+  if (/^Binary files .* differ$/m.test(out)) {
+    // git only says "differ"; its --stat gives the sizes ("Bin 2048 -> 2100 bytes").
+    const stat = await runGit(repo, [args[0], '--stat=1000', ...args.slice(1)], { okExitCodes: ok }).catch(() => '')
+    const m = /\bBin (\d+) -> (\d+) bytes/.exec(stat)
+    if (m) binary = { oldSize: Number(m[1]), newSize: Number(m[2]) }
+  }
+  return { diff: out, truncated, binary }
+}
+
+/** "stash@{2}", the only stash names the panel may send. */
+function assertStash(ref) {
+  if (typeof ref !== 'string' || !/^stash@\{\d{1,5}\}$/.test(ref)) throw new GitError('Invalid stash entry')
+  return ref
+}
+
+/** Stash entries, newest first: { ref: "stash@{0}", sha, date (unix s), message }. */
+async function stashes(repo) {
+  const out = await runGit(repo, ['stash', 'list', '--format=%gd%x1f%H%x1f%ct%x1f%gs%x1e'], { okExitCodes: [0, 128] })
+  return {
+    stashes: out
+      .split('\x1e')
+      .map((rec) => rec.replace(/^\n/, ''))
+      .filter(Boolean)
+      .map((rec) => {
+        const [ref, sha, date, message] = rec.split('\x1f')
+        return { ref, sha, date: Number(date) || 0, message: message ?? '' }
+      })
+  }
 }
 
 async function status(repo) {
@@ -461,11 +500,18 @@ async function action(orca, repo, a) {
       return out
     }
     case 'stash':
-      return runGit(repo, ['stash', 'push', '--include-untracked', ...(a.message ? ['-m', String(a.message)] : [])])
+      // No paths here, and stash cleans the untracked files it saved with pathspec magic (see buildCommand).
+      return runGit(repo, ['stash', 'push', '--include-untracked', ...(a.message ? ['-m', String(a.message)] : [])], {
+        literalPathspecs: false
+      })
     case 'stashPop':
-      return runGit(repo, ['stash', 'pop'])
+      return runGit(repo, ['stash', 'pop', ...(a.ref ? [assertStash(a.ref)] : [])])
+    case 'stashApply':
+      return runGit(repo, ['stash', 'apply', assertStash(a.ref)])
     case 'stashDrop':
-      return runGit(repo, ['stash', 'drop'])
+      return runGit(repo, ['stash', 'drop', ...(a.ref ? [assertStash(a.ref)] : [])])
+    case 'stashBranch':
+      return runGit(repo, ['stash', 'branch', assertRefName(a.name, 'branch name'), assertStash(a.ref)])
     case 'resolveSide':
       return resolveSide(repo, a.paths ?? [], a.side)
     case 'writeResolved':
@@ -705,6 +751,7 @@ export default async function activate(orca) {
   orca.panels.handle('git.details', safe((i) => commitDetails(repoOf(i), i.hash)))
   orca.panels.handle('git.diff', safe((i) => diff(repoOf(i), i)))
   orca.panels.handle('git.status', safe((i) => status(repoOf(i))))
+  orca.panels.handle('git.stashes', safe((i) => stashes(repoOf(i))))
   orca.panels.handle('git.conflicts', safe((i) => conflictInfo(repoOf(i))))
   orca.panels.handle('git.conflict', safe((i) => readConflict(repoOf(i), i.path)))
   orca.panels.handle(
@@ -734,8 +781,8 @@ export default async function activate(orca) {
     } catch (err) {
       orca.panels.post('repo.changed', { repo, reason: op })
       const conflicts = await conflictInfo(repo).then((c) => c.files.length, () => 0)
-      const hint = conflicts ? ` (${conflicts} conflict${conflicts === 1 ? '' : 's'}: open the Git panel to resolve them)` : ''
-      return `${op} failed: ${err?.message ?? err}${hint}`
+      if (conflicts) return `${op} stopped on ${conflicts} conflict${conflicts === 1 ? '' : 's'}: open the Git panel to resolve them`
+      return `${op} failed: ${err?.message ?? err}`
     }
   }
   // Views of the open Git panel, for the palette and shortcuts. `select: 'first'` also selects the
@@ -753,7 +800,10 @@ export default async function activate(orca) {
   orca.commands.register('gittoolbox.push', runOnFocused('push'))
 
   orca.events.on('workspace.changed', ({ context }) => tracker.focus(context))
-  orca.settings.onDidChange?.(() => void tracker.reschedule())
+  orca.settings.onDidChange?.(() => {
+    void tracker.reschedule()
+    orca.panels.post('settings.changed', {})
+  })
 
   await tracker.reschedule()
   const context = await orca.host.call('workspace.readContext').catch(() => null)

@@ -297,6 +297,9 @@ export function createConflictUI(d) {
     el.onclick = onMergeClick
     el.oninput = onMergeInput
     updateCount()
+    resizeWatch?.disconnect()
+    resizeWatch = new ResizeObserver(() => scheduleNumbers())
+    resizeWatch.observe($('#mergeView .m-body'))
     // Start at the first real conflict (one-sided changes can wait for "Apply non-conflicting").
     const first = view.m.regions.findIndex((r) => r.type === 'chunk' && r.kind === 'conflict')
     view.cursor = first > 0 ? first - 1 : -1
@@ -328,6 +331,7 @@ export function createConflictUI(d) {
     if (r.type === 'equal') {
       return `<div class="m-row eq" data-i="${i}">
         <div class="m-side">${sideLines(r.lines, startLine(i, 'ours'))}</div><div class="m-gut"></div>
+        <div class="m-rno" aria-hidden="true"></div>
         <div class="m-res" contenteditable="plaintext-only" spellcheck="false" data-i="${i}">${esc(res)}</div>
         <div class="m-gut"></div><div class="m-side">${sideLines(r.lines, startLine(i, 'theirs'))}</div></div>`
     }
@@ -341,6 +345,7 @@ export function createConflictUI(d) {
     return `<div class="m-row ch k-${r.kind}${resolved ? ' resolved' : ''}" data-i="${i}">
       <div class="m-side s-${sideState('ours')}${r.kind === 'theirs' ? ' plain' : ''}">${sideLines(r.ours, startLine(i, 'ours'))}</div>
       <div class="m-gut">${gut('ours')}</div>
+      <div class="m-rno" aria-hidden="true"></div>
       <div class="m-res" contenteditable="plaintext-only" spellcheck="false" data-i="${i}">${esc(res)}</div>
       <div class="m-gut">${gut('theirs')}</div>
       <div class="m-side s-${sideState('theirs')}${r.kind === 'ours' ? ' plain' : ''}">${sideLines(r.theirs, startLine(i, 'theirs'))}</div></div>`
@@ -352,6 +357,62 @@ export function createConflictUI(d) {
     updateCount()
   }
 
+  // ----------------------------------------------------------------------------------------------
+  // Result line numbers. A Result cell is one editable block of text whose long lines wrap, so a plain
+  // column of numbers would drift: each number is placed at the top of its line as the browser laid it out.
+
+  let numbersFrame = 0
+  function scheduleNumbers() {
+    cancelAnimationFrame(numbersFrame)
+    numbersFrame = requestAnimationFrame(() => {
+      if (view) numberResult()
+    })
+  }
+
+  function numberResult() {
+    let n = 1
+    for (const cell of document.querySelectorAll('#mergeView .m-res')) {
+      const box = cell.previousElementSibling
+      if (!(cell instanceof HTMLElement) || !(box instanceof HTMLElement) || !box.classList.contains('m-rno')) continue
+      const tops = lineTops(cell)
+      const base = cell.getBoundingClientRect().top
+      box.innerHTML = tops.map((t, k) => `<span style="top:${Math.round(t - base)}px">${n + k}</span>`).join('')
+      n += tops.length
+    }
+  }
+
+  /** Viewport top of each line in a Result cell, ignoring the trailing sentinel newline. */
+  function lineTops(cell) {
+    const nodes = []
+    const walk = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT)
+    for (let t = walk.nextNode(); t; t = walk.nextNode()) nodes.push(t)
+    const text = nodes.map((t) => t.data).join('')
+    const body = text.endsWith('\n') ? text.slice(0, -1) : text
+    if (!body && !text) return []
+    const starts = [0]
+    for (let k = 0; k < body.length; k++) if (body[k] === '\n') starts.push(k + 1)
+    const range = document.createRange()
+    const top0 = cell.getBoundingClientRect().top
+    const lh = parseFloat(getComputedStyle(cell).lineHeight) || 19
+    return starts.map((off, k) => {
+      // Find the text node holding this offset; measure one character (a newline has a box too).
+      let rest = off
+      for (const node of nodes) {
+        if (rest < node.data.length || (rest === node.data.length && node === nodes[nodes.length - 1])) {
+          const end = Math.min(rest + 1, node.data.length)
+          if (end === rest) break
+          range.setStart(node, rest)
+          range.setEnd(node, end)
+          const rect = range.getClientRects()[0]
+          if (rect) return rect.top
+          break
+        }
+        rest -= node.data.length
+      }
+      return top0 + k * lh
+    })
+  }
+
   function updateCount() {
     const c = counts(view.m)
     const parts = []
@@ -361,6 +422,7 @@ export function createConflictUI(d) {
     el.textContent = parts.join(' · ')
     el.classList.toggle('ok', !c.conflicts && !c.changes)
     $('#mergeView [data-m="nonConflicting"]').disabled = !c.changes
+    scheduleNumbers() // every change to the Result passes through here
   }
 
   function onMergeClick(e) {
@@ -498,7 +560,12 @@ export function createConflictUI(d) {
     return true
   }
 
+  /** @type {ResizeObserver | null} */
+  let resizeWatch = null
+
   function hideMerge() {
+    resizeWatch?.disconnect()
+    resizeWatch = null
     const back = view?.fromDialog
     view = null
     const el = $('#mergeView')

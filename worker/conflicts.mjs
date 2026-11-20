@@ -1,7 +1,9 @@
 // Conflict access for the merge view: what is in conflict, the three versions of a file, and
-// writing a resolution. Everything goes through git (no host file I/O), so it also works for
-// repositories that git reaches inside WSL.
-import { GitError, assertPaths, parseStatus, runGit } from './git.mjs'
+// writing a resolution. Files are read and written through git, so it also works for repositories
+// that git reaches inside WSL. The one exception, operationInProgress, only checks whether git's own
+// marker files exist, and falls back to asking git when the host cannot see them.
+import { stat } from 'node:fs/promises'
+import { GitError, assertPaths, hostPath, parseStatus, runGit } from './git.mjs'
 
 /** Larger stages are offered as whole-file Yours/Theirs only. */
 export const MAX_MERGE_BYTES = 1024 * 1024
@@ -21,8 +23,37 @@ export function conflictType(code) {
   return TYPES[code] ?? 'conflict'
 }
 
-/** @param {string} repo */
+/** The marker files git keeps while an operation is stopped, in the order operationInProgress reads them. */
+const MARKERS = ['HEAD', 'MERGE_HEAD', 'rebase-merge', 'rebase-apply', 'rebase-apply/applying', 'CHERRY_PICK_HEAD', 'REVERT_HEAD']
+
+/**
+ * Which operation is stopped, if any: one git call for where the marker files are, then a look at the files
+ * (as git does itself). A status refresh used to start ten git processes for this, each a wsl.exe on WSL.
+ * @param {string} repo
+ */
 export async function operationInProgress(repo) {
+  try {
+    const out = await runGit(repo, ['rev-parse', ...MARKERS.flatMap((m) => ['--git-path', m])])
+    const paths = out.split('\n').filter(Boolean)
+    if (paths.length === MARKERS.length) {
+      const has = await Promise.all(paths.map((p) => stat(hostPath(repo, p)).then(() => true, () => false)))
+      // HEAD always exists: when the host cannot see it, the files are out of reach, so ask git instead.
+      if (has[0]) {
+        const [, merge, rebaseMerge, rebaseApply, applying, cherryPick, revert] = has
+        return pickOperation({ merge, rebaseMerge, rebaseApply, applying, cherryPick, revert })
+      }
+    }
+  } catch {}
+  return operationInProgressViaGit(repo)
+}
+
+/** @param {{ merge: boolean; rebaseMerge: boolean; rebaseApply: boolean; applying: boolean; cherryPick: boolean; revert: boolean }} f */
+function pickOperation({ merge, rebaseMerge, rebaseApply, applying, cherryPick, revert }) {
+  return pickOperation({ merge, rebaseMerge, rebaseApply, applying, cherryPick, revert })
+}
+
+/** operationInProgress through git alone, for hosts that cannot read the repository's files. @param {string} repo */
+export async function operationInProgressViaGit(repo) {
   const verify = (ref) =>
     runGit(repo, ['rev-parse', '-q', '--verify', ref], { okExitCodes: [0, 1, 128] }).then(
       (o) => o.trim().length > 0,

@@ -46,7 +46,10 @@ the right sidebar under the branch icon.
 - A diff preview that stays open and updates in place while you work.
 - Commit, amend, and commit and push (Ctrl/Cmd+Enter commits); the message box shows the subject length against 72
   characters.
-- During a merge, rebase, cherry-pick or revert, a banner shows its state and offers to abort it.
+- During a merge, rebase, cherry-pick, revert or `git am`, a banner shows its state and offers to abort it.
+- Stashes: stash your changes (unversioned files included) with an optional message, see what each stash holds, and
+  apply, pop, drop or turn one into a new branch.
+- Binary files show their type and how their size changed.
 
 ### Merge conflicts
 
@@ -116,8 +119,15 @@ branch names typed in the panel are checked before they reach git.
 
 ```sh
 npm test                          # parsers, graph layout, three-way merge, focus matching and real temporary repositories
+npm run test:e2e                  # the real panel in headless Chrome against a generated test repository
 orca plugin dev watch . --json    # on the Orca host (a Windows path for a folder in WSL)
 ```
+
+The E2E checks (`tests/e2e/`) serve the real panel and worker with a stand-in Orca host (`server.mjs`), build a test
+repository full of edge cases (`make-testbed.sh`: nested and remote-only branches, conflicts, a worktree, 420 commits,
+awkward file names) and drive it with playwright-core: run `npm i --no-save playwright-core` first, or point
+`PLAYWRIGHT_CORE` at an existing copy. `CHROME_PATH` picks the browser and `TESTBED` where the repository is built
+(default `$TMPDIR/gtb-testbed`). `node tests/e2e/server.mjs . 4777` serves the panel on that repository for a browser.
 
 Keep screenshots (`--shot <dir>`) outside the plugin folder: Orca ties a development plugin's approval to its files,
 so writing into the folder pauses the plugin until it is approved again.

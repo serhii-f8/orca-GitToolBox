@@ -17,6 +17,7 @@ const ICONS = {
   pull: '<path d="M3 3l7 7"/><path d="M10 4.5V10H4.5"/><path d="M3 13.5h10"/>',
   push: '<path d="M4 12l7-7"/><path d="M5.5 5H11v5.5"/><path d="M3 14h10"/>',
   plus: '<path d="M8 3v10M3 8h10"/>',
+  stash: '<rect x="2.5" y="3" width="11" height="3" rx="1"/><path d="M3.5 6v6.5h9V6"/><path d="M6.5 9h3"/>',
   minus: '<path d="M3 8h10"/>',
   refresh: '<path d="M13 8a5 5 0 1 1-1.5-3.5"/><path d="M13 2.5v3h-3"/>',
   branch:
@@ -78,6 +79,10 @@ const state = {
   graphLanes: 1,
   hasMore: false,
   loadingLog: false,
+  /** @type {{ ref: string; sha: string; date: number; message: string }[]} */
+  stashes: [],
+  stashSig: '',
+  stashesOpen: true,
   logToken: 0,
   detailsToken: 0,
   filters: { ref: 'all', text: '', author: '', since: '' },
@@ -150,12 +155,31 @@ async function act(op, args = {}, { success, quiet = false, timeoutMs = 120_000,
 
 /** Like act, but shows the failure instead of throwing. */
 async function tryAct(op, args, opts) {
+  // Conflicts already there mean git refused to start (resolve the index first): that one is an error.
+  const hadConflicts = (state.conflictCount ?? 0) > 0
   try {
     return await act(op, args, opts)
   } catch (err) {
-    toastError(`${opLabel(op)} failed`, err)
+    const stop = hadConflicts ? null : await conflictStop(op)
+    if (stop) toast(`${opLabel(op)} stopped on ${stop}`, 'Resolve them in the Conflicts dialog, then continue or commit.', { warn: true, timeout: 8000 })
+    else toastError(`${opLabel(op)} failed`, err)
     return false
   }
+}
+
+const CONFLICT_OPS = new Set(['merge', 'pull', 'rebase', 'cherryPick', 'revert', 'stashPop', 'continue', 'skip'])
+
+/**
+ * After a failed action: when it is one that stops on conflicts and the repository now has some, a short
+ * count such as "3 conflicts", else null. Stopping there is a normal outcome to resolve (the Conflicts
+ * dialog opens by itself), not an error. Read from the status: git's message for a pull is the fetch
+ * output and need not mention the conflicts at all.
+ */
+async function conflictStop(op) {
+  if (!CONFLICT_OPS.has(op)) return null
+  const st = await req('git.status').catch(() => null)
+  const n = st?.files.filter((f) => f.kind === 'conflict').length ?? 0
+  return n ? `${n} conflict${n === 1 ? '' : 's'}` : null
 }
 
 const opLabel = (op) =>
@@ -199,9 +223,9 @@ const lastLines = (text, n = 6) =>
 // ------------------------------------------------------------------------------------------------
 // Toasts, menus and dialogs
 
-function toast(title, detail = '', { error = false, timeout } = {}) {
+function toast(title, detail = '', { error = false, warn = false, timeout } = {}) {
   const el = document.createElement('div')
-  el.className = `toast${error ? ' error' : ''}`
+  el.className = `toast${error ? ' error' : warn ? ' warn' : ''}`
   el.innerHTML = `<div><div>${esc(title)}</div>${detail ? `<pre>${esc(detail)}</pre>` : ''}</div><button class="x" title="Dismiss">✕</button>`
   $('.x', el).onclick = () => el.remove()
   $('#toasts').append(el)
@@ -214,7 +238,7 @@ const toastError = (title, err) => toast(title, err?.message ?? String(err), { e
 let menuCleanup = null
 /**
  * @param {MouseEvent} ev
- * @param {({ label: string; run: () => void; danger?: boolean; disabled?: boolean } | '-' | { head: string })[]} items
+ * @param {({ label: string; run: () => void; danger?: boolean; disabled?: boolean; why?: string } | '-' | { head: string })[]} items
  */
 function showMenu(ev, items) {
   ev.preventDefault()
@@ -225,7 +249,7 @@ function showMenu(ev, items) {
     .map((it, i) => {
       if (it === '-') return '<div class="sep"></div>'
       if ('head' in it) return `<div class="head">${esc(it.head)}</div>`
-      return `<div class="item${it.danger ? ' danger' : ''}${it.disabled ? ' disabled' : ''}" data-i="${i}" role="menuitem">${esc(it.label)}</div>`
+      return `<div class="item${it.danger ? ' danger' : ''}${it.disabled ? ' disabled' : ''}" data-i="${i}" role="menuitem"${it.disabled ? ' aria-disabled="true"' : ''}${it.disabled && it.why ? ` title="${esc(it.why)}"` : ''}>${esc(it.label)}</div>`
     })
     .join('')
   menu.classList.remove('hidden')
@@ -237,6 +261,7 @@ function showMenu(ev, items) {
     const el = /** @type {HTMLElement} */ (e.target).closest('.item')
     if (!el) return
     const it = /** @type {any} */ (items[Number(el.dataset.i)])
+    if (it.disabled) return // greyed out, and it must not run either
     hideMenu()
     it.run()
   }
@@ -318,7 +343,7 @@ function ask(o) {
     document.addEventListener('keydown', onKey, true)
     form.onsubmit = (e) => {
       e.preventDefault()
-      if (field && !o.input?.multiline && !field.value.trim()) {
+      if (field && !o.input?.multiline && !o.input?.optional && !field.value.trim()) {
         field.focus()
         return
       }
@@ -432,6 +457,9 @@ async function loadWorkspaces() {
 
   let next = state.repo
   const focused = state.workspaces.find((w) => w.id === state.focusedId && w.git)
+  // Focus moved to a folder that is not a repository: say why the panel stays where it is.
+  const plain = focusMoved && !firstLoad && state.repo ? state.workspaces.find((w) => w.id === state.focusedId && !w.git) : null
+  if (plain) toast(`${plain.name} is not a Git repository`, `The panel keeps showing ${state.repoName || 'the previous repository'}.`, { timeout: 4000 })
   if (focusMoved && focused && state.follow && pickSeq === state.pickSeq && !conflictsUI.mergeOpen) next = focused.path
   if (!next) {
     // First load: the workspace Orca shows, else the one picked last time, else any repository.
@@ -456,6 +484,8 @@ async function setRepo(path) {
   state.repoName = state.workspaces.find((w) => w.path === path)?.name ?? ''
   state.filters = { ref: 'all', text: '', author: '', since: '' }
   state.sig = { log: '', branches: '', status: '' }
+  state.stashes = []
+  state.stashSig = ''
   $('#textFilter').value = ''
   $('#userSelect').value = ''
   $('#dateSelect').value = ''
@@ -498,6 +528,7 @@ async function refreshAll({ background = true } = {}) {
   if (refreshing.has(key)) return refreshing.get(key)
   const run = (async () => {
     const results = await Promise.allSettled([
+      loadStashes(),
       loadBranches(),
       loadStatus(),
       background ? refreshLog() : loadLog(true, false)
@@ -790,8 +821,8 @@ function onTreeContext(e) {
       { label: `Rebase '${cur ?? 'HEAD'}' onto '${it.name}'`, run: () => void rebase(it.name), disabled: it.current },
       '-',
       it.current
-        ? { label: 'Update (Pull)', run: () => void pull() }
-        : { label: 'Update (Fast-Forward)', run: () => void tryAct('updateBranch', { branch: it.name }, { success: `Updated ${it.name}` }), disabled: !it.upstream },
+        ? { label: 'Update (Pull)', run: () => void pull(), disabled: !it.upstream, why: 'No upstream branch: Push sets one' }
+        : { label: 'Update (Fast-Forward)', run: () => void tryAct('updateBranch', { branch: it.name }, { success: `Updated ${it.name}` }), disabled: !it.upstream, why: 'No upstream branch to update from' },
       { label: 'Push…', run: () => void push(it.name) },
       '-',
       { label: isFavorite(it.name) ? 'Remove from Favorites' : 'Add to Favorites', run: () => void toggleFavorite(it.name) },
@@ -1195,7 +1226,7 @@ async function showCommitDiff(f) {
   try {
     const res = await req('git.diff', { hash: d.hash, parent: d.parents[0] ?? null, path: f.path, oldPath: f.oldPath })
     if (state.details !== d) return
-    $('.diff', pane).outerHTML = diffHtml(res.diff, res.truncated)
+    $('.diff', pane).outerHTML = diffHtml(res.diff, res.truncated, res.binary)
   } catch (err) {
     $('.diff', pane).innerHTML = `<div class="info">${esc(err.message)}</div>`
   }
@@ -1240,7 +1271,8 @@ async function loadStatus() {
   renderChanges()
   list.scrollTop = scroll
   // Keep the open diff: refresh it in place if the file is still changed, else say it is gone.
-  if (state.changeSel) {
+  // A selected stash is not a file: loadStashes keeps or clears its diff.
+  if (state.changeSel && !state.changeSel.startsWith('stash:')) {
     const f = changeRows.find((r) => `${r.group}:${r.path}` === state.changeSel)
     if (f) void showWorkingDiff(f, { quiet: true })
     else {
@@ -1325,6 +1357,107 @@ function changeGroups() {
 }
 
 let changeRows = []
+async function loadStashes() {
+  const repo = state.repo
+  const res = await req('git.stashes')
+  if (repo !== state.repo) return
+  const sig = JSON.stringify(res.stashes)
+  if (sig === state.stashSig) return
+  state.stashSig = sig
+  state.stashes = res.stashes
+  if (state.changeSel?.startsWith('stash:') && !state.stashes.some((s) => `stash:${s.sha}` === state.changeSel)) {
+    state.changeSel = null
+    $('#changesDiff').innerHTML = '<div class="empty"><strong>No file selected</strong>Pick a file to see its diff.</div>'
+  }
+  if (state.status) {
+    const list = $('#changesList')
+    const scroll = list.scrollTop
+    renderChanges()
+    list.scrollTop = scroll
+  }
+}
+
+/** The Stashes group under the changes: entries newest first, with Stash changes… in its header. */
+function stashSection(btn, anyChanges) {
+  const list = state.stashes
+  if (!list.length && !anyChanges) return ''
+  const head = `<div class="group stash-head" title="${state.stashesOpen ? 'Collapse' : 'Expand'}"><span class="caret${state.stashesOpen ? ' open' : ''}">${icon('chevron')}</span>Stashes <span class="n">${list.length || ''}</span><span class="spacer"></span>${anyChanges ? btn('stash', 'Stash changes…', 'data-a="stashPush"') : ''}</div>`
+  if (!state.stashesOpen) return head
+  const rows = list
+    .map((s, k) => {
+      const sel = state.changeSel === `stash:${s.sha}` ? ' selected' : ''
+      const msg = s.message.replace(/^On [^:]+: /, '').replace(/^WIP on [^:]+: [0-9a-f]+ /, 'WIP: ')
+      const tip = `${s.ref}: ${s.message}\n${new Date(s.date * 1000).toLocaleString()}`
+      return `<div class="file stash${sel}" data-stash="${k}" title="${esc(tip)}"><span class="st">${icon('stash')}</span><span class="name">${esc(msg || s.ref)}</span><span class="dir">${esc(relative(s.date * 1000))}</span><span class="acts">${btn('check', 'Apply (keep the stash)', `data-a="stashApply" data-k="${k}"`)}${btn('trash', 'Drop…', `data-a="stashDrop" data-k="${k}"`)}</span></div>`
+    })
+    .join('')
+  return head + (rows || '<div class="stash-none">No stashes. Stash changes to set them aside and get back to a clean tree.</div>')
+}
+
+function stashMenu(e, s) {
+  showMenu(e, [
+    { head: s.ref },
+    { label: 'Apply', run: () => void tryAct('stashApply', { ref: s.ref }, { success: `Applied ${s.ref}` }) },
+    { label: 'Pop (apply and drop)', run: () => void tryAct('stashPop', { ref: s.ref }, { success: `Popped ${s.ref}` }) },
+    { label: 'New Branch from Stash…', run: () => void stashBranch(s) },
+    '-',
+    { label: 'Copy Message', run: () => void copyText(s.message) },
+    { label: 'Drop…', danger: true, run: () => void stashDrop(s) }
+  ])
+}
+
+/** ask() with a text input: the typed text, or null when cancelled. */
+function inputOf(res) {
+  if (res === false || res === null || res === undefined) return null
+  return typeof res === 'string' ? res : String(res?.value ?? '')
+}
+
+async function stashPush() {
+  const text = inputOf(
+    await ask({
+      title: 'Stash changes',
+      message: 'Staged, unstaged and unversioned changes are set aside and the working tree is cleaned.',
+      input: { placeholder: 'Message (optional)', value: '', optional: true },
+      ok: 'Stash'
+    })
+  )
+  if (text === null) return
+  const message = text.trim()
+  await tryAct('stash', message ? { message } : {}, { success: 'Changes stashed' })
+}
+
+async function stashDrop(s) {
+  const ok = await ask({ title: `Drop ${s.ref}?`, message: `"${s.message}" will be deleted.`, ok: 'Drop', danger: true })
+  if (ok) await tryAct('stashDrop', { ref: s.ref }, { success: `Dropped ${s.ref}` })
+}
+
+async function stashBranch(s) {
+  const text = inputOf(
+    await ask({
+      title: 'New branch from stash',
+      message: `Creates a branch at the commit ${s.ref} was made on, checks it out and applies the stash there.`,
+      input: { placeholder: 'Branch name', value: '' },
+      ok: 'Create'
+    })
+  )
+  const name = text?.trim()
+  if (name) await tryAct('stashBranch', { ref: s.ref, name }, { success: `Created ${name} from ${s.ref}` })
+}
+
+async function showStashDiff(s) {
+  const pane = $('#changesDiff')
+  const key = `stash:${s.sha}`
+  pane.dataset.key = key
+  pane.innerHTML = `<div class="d-head"><span class="st">${icon('stash')}</span><span class="title" title="${esc(s.message)}">${esc(s.message)}</span><span class="spacer"></span><span>${esc(s.ref)}</span></div><div class="diff"><div class="info">Loading…</div></div>`
+  try {
+    const res = await req('git.diff', { stash: s.ref })
+    if (pane.dataset.key !== key) return
+    $('.diff', pane).outerHTML = diffHtml(res.diff, res.truncated, null, { files: true })
+  } catch (err) {
+    $('.diff', pane).innerHTML = `<div class="info">${esc(err.message)}</div>`
+  }
+}
+
 function renderChanges() {
   const g = changeGroups()
   changeRows = []
@@ -1369,7 +1502,9 @@ function renderChanges() {
       btn('plus', 'Add all to Git', 'data-a="stageGroup" data-g="untracked"'),
       (i) => btn('plus', 'Add to Git', `data-a="stage" data-i="${i}"`) + btn('trash', 'Delete…', `data-a="discard" data-i="${i}"`)
     )
-  $('#changesList').innerHTML = html || '<div class="empty"><strong>Working tree clean</strong>Edits to tracked files and new files show up here.</div>'
+  const stash = stashSection(btn, !!html)
+  $('#changesList').innerHTML =
+    (html || '<div class="empty"><strong>Working tree clean</strong>Edits to tracked files and new files show up here.</div>') + stash
   updateCommitButtons()
 }
 
@@ -1393,6 +1528,22 @@ function updateCommitButtons() {
 
 async function onChangesClick(e) {
   const t = /** @type {HTMLElement} */ (e.target)
+  const stashBtn = t.closest('button[data-a^="stash"]')
+  if (stashBtn instanceof HTMLElement || t.closest('.stash-head')) {
+    e.stopPropagation()
+    const a = stashBtn instanceof HTMLElement ? stashBtn.dataset.a : 'toggleStashes'
+    const s = stashBtn instanceof HTMLElement && stashBtn.dataset.k !== undefined ? state.stashes[Number(stashBtn.dataset.k)] : null
+    if (a === 'toggleStashes') {
+      state.stashesOpen = !state.stashesOpen
+      try {
+        localStorage.setItem('gtb.stashesOpen', state.stashesOpen ? '1' : '0')
+      } catch {}
+      renderChanges()
+    } else if (a === 'stashPush') await stashPush()
+    else if (a === 'stashApply' && s) await tryAct('stashApply', { ref: s.ref }, { success: `Applied ${s.ref}` })
+    else if (a === 'stashDrop' && s) await stashDrop(s)
+    return
+  }
   const b = t.closest('button[data-a]')
   if (b instanceof HTMLElement) {
     e.stopPropagation()
@@ -1426,6 +1577,15 @@ async function onChangesClick(e) {
     }
     return
   }
+  const stashRow = t.closest('.file.stash')
+  if (stashRow instanceof HTMLElement) {
+    const s = state.stashes[Number(stashRow.dataset.stash)]
+    state.changeSel = `stash:${s.sha}`
+    for (const el of $$('#changesList .file.selected')) el.classList.remove('selected')
+    stashRow.classList.add('selected')
+    void showStashDiff(s)
+    return
+  }
   const row = t.closest('.file')
   if (row instanceof HTMLElement) {
     const f = changeRows[Number(row.dataset.i)]
@@ -1451,7 +1611,7 @@ async function showWorkingDiff(f, { quiet = false } = {}) {
       const old = $('.diff', pane)
       if (!old || pane.dataset.key !== key || old.dataset.sig === res.diff) return
       const scroll = old.scrollTop
-      old.outerHTML = diffHtml(res.diff, res.truncated)
+      old.outerHTML = diffHtml(res.diff, res.truncated, res.binary)
       const fresh = $('.diff', pane)
       fresh.dataset.sig = res.diff
       fresh.scrollTop = scroll
@@ -1468,7 +1628,7 @@ async function showWorkingDiff(f, { quiet = false } = {}) {
       untracked: f.group === 'untracked'
     })
     if (pane.dataset.key !== key) return
-    $('.diff', pane).outerHTML = diffHtml(res.diff, res.truncated)
+    $('.diff', pane).outerHTML = diffHtml(res.diff, res.truncated, res.binary)
     $('.diff', pane).dataset.sig = res.diff
   } catch (err) {
     $('.diff', pane).innerHTML = `<div class="info">${esc(err.message)}</div>`
@@ -1791,6 +1951,7 @@ function wireSwitcher() {
   try {
     state.follow = localStorage.getItem('gtb.follow') !== '0'
     state.lastPickedId = localStorage.getItem('gtb.lastPicked')
+    state.stashesOpen = localStorage.getItem('gtb.stashesOpen') !== '0'
   } catch {}
   $('#followFocus').checked = state.follow
   $('#followFocus').addEventListener('change', (e) => {
@@ -2030,6 +2191,8 @@ function wire() {
     if (f?.group === 'conflicts') void conflictsUI.openMerge(f.path)
   })
   $('#changesList').addEventListener('contextmenu', (e) => {
+    const stashRow = /** @type {HTMLElement} */ (e.target).closest('.file.stash')
+    if (stashRow instanceof HTMLElement) return stashMenu(e, state.stashes[Number(stashRow.dataset.stash)])
     const row = /** @type {HTMLElement} */ (e.target).closest('.file')
     const f = row instanceof HTMLElement ? changeRows[Number(row.dataset.i)] : null
     if (f?.group !== 'conflicts') return
@@ -2099,10 +2262,15 @@ async function init() {
     const fav = await orca.storage.get('favorites')
     if (fav && typeof fav === 'object') state.favorites = /** @type {any} */ (fav)
   } catch {}
-  try {
-    const size = Number(await orca.settings.get('logPageSize'))
-    if (size >= 50) state.pageSize = Math.min(size, 5000)
-  } catch {}
+  const readPageSize = async () => {
+    try {
+      const size = Number(await orca.settings.get('logPageSize'))
+      if (size >= 50) state.pageSize = Math.min(size, 5000)
+    } catch {}
+  }
+  await readPageSize()
+  // A new page size applies to the next page loaded; the commits already shown stay.
+  orca.plugin.on('settings.changed', () => void readPageSize())
 
   orca.plugin.on('repo.changed', (payload) => {
     if (!payload || payload.repo !== state.repo || state.acting) return

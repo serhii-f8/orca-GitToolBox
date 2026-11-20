@@ -1,6 +1,7 @@
 // Git access for the worker: where a repository lives, how to run git there, and parsers for
 // git's machine-readable output. Pure functions are exported for tests.
 import { spawn } from 'node:child_process'
+import { isAbsolute, join, posix } from 'node:path'
 
 const FS = '\x1f' // field separator in our --format strings
 const RS = '\x1e' // record separator
@@ -21,19 +22,40 @@ export function parseRepoPath(p) {
 }
 
 /**
+ * A path git printed (relative to the repository, or absolute where git runs) as this host can open it:
+ * inside WSL, git's /var/www/... is \\wsl.localhost\Distro\var\www\... to a Windows worker.
+ * @param {string} repo workspace path as Orca reports it
+ * @param {string} gitPath
+ * @param {string} [platform]
+ */
+export function hostPath(repo, gitPath, platform = process.platform) {
+  const loc = parseRepoPath(repo)
+  if (loc.kind === 'wsl' && platform === 'win32') {
+    const prefix = /^[\\/]{2}wsl(?:\.localhost|\$)[\\/][^\\/]+/i.exec(repo)?.[0] ?? ''
+    const abs = gitPath.startsWith('/') ? gitPath : posix.join(loc.path, gitPath)
+    return prefix + abs.replace(/\//g, '\\')
+  }
+  return isAbsolute(gitPath) ? gitPath : join(repo, gitPath)
+}
+
+/**
  * @param {string} repo  workspace path as Orca reports it
  * @param {string[]} args git arguments
  * @param {string} [platform]
+ * @param {{ literalPathspecs?: boolean }} [opts]
  */
-export function buildCommand(repo, args, platform = process.platform) {
+export function buildCommand(repo, args, platform = process.platform, { literalPathspecs = true } = {}) {
   const loc = parseRepoPath(repo)
   const gitArgs = ['-c', 'core.quotepath=off', '-c', 'color.ui=never', '-c', 'core.pager=cat', ...args]
   // GIT_LITERAL_PATHSPECS: file names are never patterns, so ":foo" or "*.txt" name exactly that file.
+  // Off only for commands that take no paths and use pathspec magic inside: `stash push -u` cleans the
+  // stashed untracked files with ":/", which a literal reading turns into a no-op.
   // GIT_EDITOR=true: nothing can open an editor here, and GIT_EDITOR outranks any core.editor setting.
+  /** @type {Record<string, string>} */
   const env = {
     GIT_TERMINAL_PROMPT: '0',
     GIT_OPTIONAL_LOCKS: '0',
-    GIT_LITERAL_PATHSPECS: '1',
+    ...(literalPathspecs ? { GIT_LITERAL_PATHSPECS: '1' } : {}),
     GIT_EDITOR: 'true',
     LC_ALL: 'C.UTF-8'
   }
@@ -65,13 +87,14 @@ export class GitError extends Error {
  * Runs git and resolves with stdout.
  * @param {string} repo
  * @param {string[]} args
- * @param {{ input?: string; timeoutMs?: number; okExitCodes?: number[]; maxBytes?: number; buffer?: boolean }} [opts]
- *   `buffer` resolves with the raw stdout bytes instead of a UTF-8 string.
+ * @param {{ input?: string; timeoutMs?: number; okExitCodes?: number[]; maxBytes?: number; buffer?: boolean; literalPathspecs?: boolean }} [opts]
+ *   `buffer` resolves with the raw stdout bytes instead of a UTF-8 string. `literalPathspecs: false` is only
+ *   for commands given no paths (see buildCommand).
  * @returns {Promise<any>}
  */
 export function runGit(repo, args, opts = {}) {
-  const { input, timeoutMs = 60_000, okExitCodes = [0], maxBytes = 64 * 1024 * 1024, buffer = false } = opts
-  const cmd = buildCommand(repo, args)
+  const { input, timeoutMs = 60_000, okExitCodes = [0], maxBytes = 64 * 1024 * 1024, buffer = false, literalPathspecs = true } = opts
+  const cmd = buildCommand(repo, args, process.platform, { literalPathspecs })
   return new Promise((resolve, reject) => {
     let child
     try {
