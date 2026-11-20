@@ -85,8 +85,8 @@ the right sidebar under the branch icon.
 
 - **Status bar:** the current branch with ↑outgoing and ↓incoming counts and `*` for local changes. Click it to fetch.
 - **Background fetch:** every 15 minutes by default, with a notification when the current branch falls behind.
-- **Commands:** *Git Toolbox: Fetch*, *Update (Pull)* (`Mod+Shift+T`), *Push*, *Show Log*, *Show Changes* and
-  *Switch Project or Worktree*.
+- **Commands:** *Git Toolbox: Fetch*, *Update (Pull)* (`Mod+Shift+U`), *Push*, *Show Log*, *Show Changes* and
+  *Switch Project or Worktree*. The Show and Switch commands open the Git panel if it is hidden.
 - **Settings** (Settings → Plugins → Git Toolbox): fetch interval, status bar refresh, behind notifications, pull mode
   (merge, rebase or fast-forward only) and how many commits load per page.
 

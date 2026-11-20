@@ -1,4 +1,5 @@
-// Regression checks in the real panel (log paging, diff rows, commit and push, branch chip, popovers),
+// Regression checks in the real panel (log paging, diff rows, commit and push, branch chip, popovers,
+// stashes, conflict stops, commands run before the panel loads),
 // against the testbed from make-testbed.sh. usage: node e2e-fixes.mjs [plugin-dir]
 import { launch, TESTBED } from './browser.mjs'
 import { spawn, execFileSync } from 'node:child_process'
@@ -135,6 +136,13 @@ try {
   assert.ok(!git('stash', 'list').includes('from the panel'))
   assert.equal((await page.$$('#changesList .file.stash')).length, stashCount - 1)
   ok('stash from the panel, show its diff, apply it and drop it')
+
+  // 8. A palette command run while the panel is closed shows its view once the panel loads.
+  await page.goto('about:blank')
+  await fetch('http://localhost:4791/__cmd', { method: 'POST', body: JSON.stringify({ id: 'gittoolbox.switch' }) })
+  await page.goto('http://localhost:4791/')
+  await page.waitForSelector('#switcherPop:not(.hidden)', { timeout: 15000 })
+  ok('a command run before the panel loads opens its view when the panel starts')
 
   assert.deepEqual(errors, [])
   ok('no page errors')

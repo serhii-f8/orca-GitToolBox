@@ -92,7 +92,7 @@
     "keybindings": [
       {
         "command": "gittoolbox.pull",
-        "key": "Mod+Shift+T"
+        "key": "Mod+Shift+U"
       }
     ],
     "events": [

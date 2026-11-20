@@ -17,6 +17,7 @@ import {
   splitRemoteName
 } from './git.mjs'
 import { conflictInfo, operationInProgress, readConflict, resolveSide, writeResolved } from './conflicts.mjs'
+import { revealPanel } from './reveal.mjs'
 
 const MAX_DIFF_BYTES = 768 * 1024
 const NETWORK_TIMEOUT = 180_000
@@ -787,14 +788,27 @@ export default async function activate(orca) {
   }
   // Views of the open Git panel, for the palette and shortcuts. `select: 'first'` also selects the
   // newest commit or changed file, so the view opens with something in it.
+  // A panel that is not loaded yet misses the post, so the view also waits here for it to collect.
+  let pending = null
   const show = (view) => {
+    pending = { view, at: Date.now() }
     orca.panels.post('ui.show', view)
-    return 'Shown in the Git panel (open it from the right sidebar if it is hidden)'
+    return 'Shown in the Git panel'
   }
   orca.panels.handle('ui.show', safe((i) => ({ shown: show(i) })))
-  orca.commands.register('gittoolbox.showLog', () => show({ tab: 'log' }))
-  orca.commands.register('gittoolbox.showChanges', () => show({ tab: 'changes' }))
-  orca.commands.register('gittoolbox.switch', () => show({ switcher: true }))
+  orca.panels.handle('ui.pending', () => {
+    const p = pending
+    pending = null
+    return { view: p && Date.now() - p.at < 20_000 ? p.view : null }
+  })
+  // From the palette or a shortcut the panel may be hidden: open it too.
+  const showFromCommand = async (view) => {
+    show(view)
+    return (await revealPanel('git')) ? 'Shown in the Git panel' : 'Shown in the Git panel (open it from the right sidebar if it is hidden)'
+  }
+  orca.commands.register('gittoolbox.showLog', () => showFromCommand({ tab: 'log' }))
+  orca.commands.register('gittoolbox.showChanges', () => showFromCommand({ tab: 'changes' }))
+  orca.commands.register('gittoolbox.switch', () => showFromCommand({ switcher: true }))
   orca.commands.register('gittoolbox.fetch', runOnFocused('fetch'))
   orca.commands.register('gittoolbox.pull', runOnFocused('pull'))
   orca.commands.register('gittoolbox.push', runOnFocused('push'))

@@ -2280,12 +2280,19 @@ async function init() {
   })
   orca.on('workspace.changed', () => scheduleWorkspaces())
   orca.plugin.on('workspaces.updated', () => scheduleWorkspaces())
-  orca.plugin.on('ui.show', (view) => void showView(view ?? {}))
+  // A view asked for by a command: the post when the panel is open, collected below when it was not.
+  const takePending = () => orca.plugin.request('ui.pending', {}, { timeoutMs: 5000 }).then((r) => r?.view ?? null, () => null)
+  orca.plugin.on('ui.show', (view) => {
+    void takePending()
+    void showView(view ?? {})
+  })
   window.addEventListener('focus', () => {
     if (state.repo && !state.acting) void loadStatus().catch(() => undefined)
   })
 
   await loadWorkspaces()
+  const view = await takePending()
+  if (view) await showView(view)
 }
 
 void init()
