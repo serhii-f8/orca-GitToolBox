@@ -48,8 +48,10 @@ export async function operationInProgress(repo) {
 }
 
 /** @param {{ merge: boolean; rebaseMerge: boolean; rebaseApply: boolean; applying: boolean; cherryPick: boolean; revert: boolean }} f */
-function pickOperation({ merge, rebaseMerge, rebaseApply, applying, cherryPick, revert }) {
-  return pickOperation({ merge, rebaseMerge, rebaseApply, applying, cherryPick, revert })
+export function pickOperation({ merge, rebaseMerge, rebaseApply, applying, cherryPick, revert }) {
+  const rebase = rebaseMerge || (rebaseApply && !applying)
+  const am = rebaseApply && applying
+  return merge ? 'merge' : am ? 'am' : rebase ? 'rebase' : cherryPick ? 'cherry-pick' : revert ? 'revert' : null
 }
 
 /** operationInProgress through git alone, for hosts that cannot read the repository's files. @param {string} repo */
@@ -84,9 +86,7 @@ export async function operationInProgressViaGit(repo) {
     verify('CHERRY_PICK_HEAD'),
     verify('REVERT_HEAD')
   ])
-  const rebase = rebaseMerge || (rebaseApply && !applying)
-  const am = rebaseApply && applying
-  return merge ? 'merge' : am ? 'am' : rebase ? 'rebase' : cherryPick ? 'cherry-pick' : revert ? 'revert' : null
+  return pickOperation({ merge, rebaseMerge, rebaseApply, applying, cherryPick, revert })
 }
 
 /** @param {string} repo @param {string} rev */

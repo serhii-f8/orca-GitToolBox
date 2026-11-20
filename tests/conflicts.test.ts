@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { conflictInfo, readConflict, writeResolved, resolveSide, conflictType, operationInProgress, operationInProgressViaGit } from '../worker/conflicts.mjs'
+import { conflictInfo, readConflict, writeResolved, resolveSide, conflictType, operationInProgress, operationInProgressViaGit, pickOperation } from '../worker/conflicts.mjs'
 
 const dirs: string[] = []
 after(() => {
@@ -256,4 +256,15 @@ test('a file deleted on both sides opens as a conflict and resolves by staying d
   assert.equal(c.deleted, 'both')
   await resolveSide(dir, ['f.txt'], 'ours')
   assert.ok(!(await conflictInfo(dir)).files.some((f) => f.path === 'f.txt'))
+})
+
+test('pickOperation names the stopped operation from the marker files', () => {
+  const none = { merge: false, rebaseMerge: false, rebaseApply: false, applying: false, cherryPick: false, revert: false }
+  assert.equal(pickOperation(none), null)
+  assert.equal(pickOperation({ ...none, merge: true }), 'merge')
+  assert.equal(pickOperation({ ...none, rebaseMerge: true }), 'rebase')
+  assert.equal(pickOperation({ ...none, rebaseApply: true }), 'rebase')
+  assert.equal(pickOperation({ ...none, rebaseApply: true, applying: true }), 'am')
+  assert.equal(pickOperation({ ...none, cherryPick: true }), 'cherry-pick')
+  assert.equal(pickOperation({ ...none, revert: true }), 'revert')
 })
